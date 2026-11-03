@@ -51,7 +51,9 @@ esphome:
           sengled::query_config(0);
       # let the lights restore their state without sending anything
       - delay: 5s
-      - lambda: sengled::ready = true;
+      - lambda: |-
+          sengled::ready = true;
+          sengled::poll_slots();   // slots are filled by now
 
 globals:
   # lamp address per slot, 0 = empty (see "Lamps" above)
@@ -103,6 +105,7 @@ interval:
           sengled::Frame f;
           while (sengled::poll(id(pulse_uart), f)) {
             sengled::pairing::on_frame(f);
+            sengled::slots::on_frame(f);
             if (f.dst != sengled::CLIENT) continue;
             if (f.is(2, 4) && f.src == sengled::MASTER) {        // speaker_state
               auto ch = id(channel_sel).at(f.at(2));
@@ -137,6 +140,7 @@ interval:
           sengled::speaker_state(sengled::MASTER);
           sengled::lamp_state(sengled::MASTER);
           sengled::get_audio_source();
+          sengled::poll_slots();
 
 output:
   - platform: template

@@ -82,7 +82,8 @@ python3 main.py mode=send port=/dev/rfcomm0 cmd=handshake
 internal UART and exposes it to Home Assistant:
 
 - lights: *All lamps*, *Gateway lamp* (the gateway's own lamp) and 8 lamp
-  slots *Lamp 1* … *Lamp 8* (the gateway supports up to 8 lamps);
+  slots *Lamp 1* … *Lamp 8* (the gateway supports up to 8 lamps); each slot
+  also has its own *volume*, *mute* and *channel*, read back from the lamp;
 - volume, mute, equalizer, channel, audio source, light memory;
 - "identify" buttons (the lamp blinks), lamp on/brightness sensors;
 - adding and removing lamps: enter the lamp address (`00020056`, or the QR

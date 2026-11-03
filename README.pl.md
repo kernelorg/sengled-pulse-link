@@ -84,7 +84,8 @@ W `esphome/` znajduje się węzeł ESPHome: ESP32 podłącza się do wewnętrzne
 UART bramki i udostępnia sterowanie w Home Assistant:
 
 - światło: *All lamps*, *Gateway lamp* (żarówka samej bramki) i 8 slotów
-  *Lamp 1* … *Lamp 8* (bramka obsługuje do 8 żarówek);
+  *Lamp 1* … *Lamp 8* (bramka obsługuje do 8 żarówek); każdy slot ma też
+  własne *volume*, *mute* i *channel*, odczytywane z żarówki;
 - głośność, wyciszenie, korektor, kanał, źródło dźwięku, pamięć światła;
 - przyciski „identify” (żarówka miga), czujniki włączenia i jasności żarówki;
 - dodawanie i usuwanie żarówek: wpisz adres żarówki (`00020056` lub tekst

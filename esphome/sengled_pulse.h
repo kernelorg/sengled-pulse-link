@@ -227,6 +227,14 @@ using Table = std::array<uint32_t, N>;
 static Table *table = nullptr;
 static bool changed = false;
 
+// last speaker_state reply per slot
+struct Sound {
+  bool known = false;
+  bool changed = false;
+  uint8_t channel = 0, eq = 0, mute = 0, volume = 0;
+};
+static std::array<Sound, N> sound{};
+
 inline void bind(Table *t) { table = t; changed = true; }
 inline uint32_t addr(size_t i) { return (table && i < N) ? (*table)[i] : 0; }
 inline std::string text(size_t i) { return addr(i) ? hex8(addr(i)) : std::string("empty"); }
@@ -243,9 +251,32 @@ inline void sync(const std::vector<uint32_t> &nodes) {
       if (slot == 0) { slot = a; break; }
   }
   if (t != *table) {
+    for (size_t i = 0; i < N; i++)
+      if (t[i] != (*table)[i]) sound[i] = Sound{};
     *table = t;
     changed = true;
   }
+}
+
+inline int index_of(uint32_t a) {
+  if (!table || a == MASTER) return -1;
+  for (size_t i = 0; i < N; i++)
+    if ((*table)[i] == a) return (int) i;
+  return -1;
+}
+
+// feed every received frame here
+inline void on_frame(const Frame &f) {
+  if (f.dst != CLIENT || !f.is(2, 4) || f.payload.size() < 6) return;
+  int i = index_of(f.src);
+  if (i < 0) return;
+  Sound &s = sound[i];
+  s.channel = f.at(2);
+  s.eq = f.at(3);
+  s.mute = f.at(4);
+  s.volume = f.at(5);
+  s.known = true;
+  s.changed = true;
 }
 
 }  // namespace slots
@@ -255,6 +286,23 @@ inline void slot_lamp(size_t i, float level) {
 }
 inline void slot_identify(size_t i) {
   if (slots::addr(i)) identify(slots::addr(i));
+}
+inline void slot_mute(size_t i, bool m) {
+  if (slots::addr(i)) mute(slots::addr(i), m);
+}
+inline void slot_channel(size_t i, uint8_t c) {
+  if (slots::addr(i)) channel(slots::addr(i), c);
+}
+// like the app's volume slider: set the volume, then unmute
+inline void slot_volume(size_t i, uint8_t v) {
+  if (!slots::addr(i)) return;
+  volume(slots::addr(i), v);
+  mute(slots::addr(i), false);
+}
+// ask every bound lamp for its sound state
+inline void poll_slots() {
+  for (size_t i = 0; i < slots::N; i++)
+    if (slots::addr(i)) speaker_state(slots::addr(i));
 }
 
 // ---- add / remove lamps ----------------------------------------------------
