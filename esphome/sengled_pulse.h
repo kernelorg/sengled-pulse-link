@@ -72,6 +72,7 @@ inline void queue(size_t len, uint32_t dst, uint8_t sub, uint8_t cmd,
 }
 
 // ---- commands -------------------------------------------------------------
+inline void generic_info() { queue(16, MASTER, 0, 0); }  // name, productID, versions
 inline void handshake(uint32_t dst) { queue(16, dst, 0, 1); }
 inline void identify(uint32_t dst) { queue(16, dst, 0, 7); }  // lamp blinks
 inline void set_config(uint32_t dst, uint8_t item, uint8_t v) { queue(20, dst, 0, 11, {{13, item}, {15, v}}); }

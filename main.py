@@ -239,6 +239,10 @@ def describe(key, p, reply):
                 return "apply"
             return f"group={a if a != 255 else '-'} own={b if b != 255 else '-'}"
         if key == (1, 3) and reply:
+            if g(3) == 255 and g(4) == 255:
+                return "dongle (no lamp)"
+            if g(3) is not None and g(3) > 100:
+                return f"no lamp (brightness byte {g(3)}, e.g. Pulse Link audio box)"
             return f"{'on' if g(2) == 0 else 'off'} brightness={g(3)}%"
         if key == (2, 0):
             return CHANNELS.get(g(2), g(2))
@@ -269,7 +273,12 @@ def describe(key, p, reply):
             addrs = [int.from_bytes(p[4 + 4 * i:8 + 4 * i], "little") for i in range(count)]
             return f"nodes={count}: " + ", ".join(fmt_addr(a) for a in addrs)
         if key == (0, 0) and reply:
-            return "name=" + p[:32].split(b"\0")[0].decode(errors="replace")
+            name = "name=" + p[:32].split(b"\0")[0].decode(errors="replace")
+            if len(p) >= 36:
+                pid = int.from_bytes(p[32:36], "little")
+                kind = {1: "single light", 2: "audio box, no lamp"}.get(pid, "lamp")
+                name += f" productID={pid} ({kind})"
+            return name
         if key == (0, 4):
             return "name=" + p[:13].split(b"\0")[0].decode(errors="replace")
         if key == (0, 11):

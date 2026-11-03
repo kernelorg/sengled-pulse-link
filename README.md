@@ -81,10 +81,13 @@ python3 main.py mode=send port=/dev/rfcomm0 cmd=handshake
 `esphome/` contains an ESPHome node that connects an ESP32 to the gateway's
 internal UART and exposes it to Home Assistant:
 
-- lights: *All lamps*, *Gateway lamp* (the gateway's own lamp) and 8 lamp
+- lights: *All lamps*, *Gateway lamp* (the gateway's own lamp; useless if
+  *Gateway type* says `audio box`, e.g. a Pulse Link) and 8 lamp
   slots *Lamp 1* … *Lamp 8* (the gateway supports up to 8 lamps); each slot
   also has its own *volume*, *mute* and *channel*, read back from the lamp;
-- volume, mute, equalizer, channel, audio source, light memory;
+- volume, mute, equalizer, channel, audio source, light memory for all lamps;
+- *Gateway type*: gateway name and productID from `generic_info`, e.g.
+  `C01-BR30 Link (productID 2, audio box, no lamp)`;
 - "identify" buttons (the lamp blinks), lamp on/brightness sensors;
 - adding and removing lamps: enter the lamp address (`00020056`, or the QR
   text `...;AD:00020056`) into *Lamp address* and press *Add lamp* /
@@ -172,7 +175,7 @@ each node by the address it got back, or uses broadcast.
 
 | sub/cmd | name | len | parameters |
 |---|---|---|---|
-| 0/0 | generic_info | 16 | reply: name `C01-BR30 Link` from `[13]`, then ids |
+| 0/0 | generic_info | 16 | reply: name `C01-BR30 Link` from `[13]`; productID `[45..48]`: 1 single light, 2 audio box (Pulse Link, no lamp), others a lamp |
 | 0/1 | handshake | 16 | reply `[13]` = `01` ok |
 | 0/2 | enum_slaves | 16 | reply: count `[15..16]` (including master), addresses from `[17]`, 4 bytes each |
 | 0/4 | set_name | 32 | `[13..25]` name, up to 13 bytes |
@@ -183,7 +186,7 @@ each node by the address it got back, or uses broadcast.
 | 0/12 | query_config | 18 | `[13]` item; reply `[15]` value |
 | 1/0 | lamp_onoff | 20 | `[15]` 0 on, 1 off |
 | 1/1 | brightness | 20 | `[15]` group value, `[16]` own value, 0..100, `FF` = keep |
-| 1/3 | lamp_state | 18 | reply `[15]` 0 on / 1 off, `[16]` brightness % |
+| 1/3 | lamp_state | 18 | reply `[15]` 0 on / 1 off, `[16]` brightness 0..100 %; `245` = node has no lamp (Pulse Link), `255 255` = dongle |
 | 2/0 | channel | 19 | `[15]` 0 right, 1 left, 2 left+right |
 | 2/1 | eq | 19 | `[15]` 0 normal, 1 pop, 2 jazz, 3 classic, 4 rock, 5 movie |
 | 2/2 | mute | 19 | `[15]` 1 mute, 0 unmute |

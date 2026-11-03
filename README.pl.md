@@ -83,10 +83,14 @@ python3 main.py mode=send port=/dev/rfcomm0 cmd=handshake
 W `esphome/` znajduje się węzeł ESPHome: ESP32 podłącza się do wewnętrznego
 UART bramki i udostępnia sterowanie w Home Assistant:
 
-- światło: *All lamps*, *Gateway lamp* (żarówka samej bramki) i 8 slotów
+- światło: *All lamps*, *Gateway lamp* (żarówka samej bramki; bezużyteczna,
+  jeśli *Gateway type* pokazuje `audio box`, np. w Pulse Link) i 8 slotów
   *Lamp 1* … *Lamp 8* (bramka obsługuje do 8 żarówek); każdy slot ma też
   własne *volume*, *mute* i *channel*, odczytywane z żarówki;
-- głośność, wyciszenie, korektor, kanał, źródło dźwięku, pamięć światła;
+- głośność, wyciszenie, korektor, kanał, źródło dźwięku, pamięć światła dla
+  wszystkich żarówek;
+- *Gateway type*: nazwa bramki i productID z `generic_info`, np.
+  `C01-BR30 Link (productID 2, audio box, no lamp)`;
 - przyciski „identify” (żarówka miga), czujniki włączenia i jasności żarówki;
 - dodawanie i usuwanie żarówek: wpisz adres żarówki (`00020056` lub tekst
   QR `...;AD:00020056`) w *Lamp address* i naciśnij *Add lamp* /
@@ -179,7 +183,7 @@ zwraca się do każdego węzła pod otrzymanym adresem albo używa rozgłoszenia
 
 | podsys./pol. | nazwa | dł. | parametry |
 |---|---|---|---|
-| 0/0 | generic_info | 16 | odpowiedź: nazwa `C01-BR30 Link` od `[13]`, dalej identyfikatory |
+| 0/0 | generic_info | 16 | odpowiedź: nazwa `C01-BR30 Link` od `[13]`; productID `[45..48]`: 1 pojedyncza żarówka, 2 audio box (Pulse Link, bez żarówki), pozostałe — żarówka |
 | 0/1 | handshake | 16 | odpowiedź `[13]` = `01` — OK |
 | 0/2 | enum_slaves | 16 | odpowiedź: liczba węzłów `[15..16]` (łącznie z masterem), adresy od `[17]` po 4 bajty |
 | 0/4 | set_name | 32 | `[13..25]` nazwa, do 13 bajtów |
@@ -190,7 +194,7 @@ zwraca się do każdego węzła pod otrzymanym adresem albo używa rozgłoszenia
 | 0/12 | query_config | 18 | `[13]` parametr; odpowiedź `[15]` wartość |
 | 1/0 | lamp_onoff | 20 | `[15]` 0 wł., 1 wył. |
 | 1/1 | brightness | 20 | `[15]` wartość grupowa, `[16]` własna, 0..100, `FF` — bez zmian |
-| 1/3 | lamp_state | 18 | odpowiedź `[15]` 0 wł. / 1 wył., `[16]` jasność % |
+| 1/3 | lamp_state | 18 | odpowiedź `[15]` 0 wł. / 1 wył., `[16]` jasność 0..100 %; `245` — węzeł nie ma żarówki (Pulse Link), `255 255` — dongle |
 | 2/0 | channel | 19 | `[15]` 0 prawy, 1 lewy, 2 lewy+prawy |
 | 2/1 | eq | 19 | `[15]` 0 normal, 1 pop, 2 jazz, 3 classic, 4 rock, 5 movie |
 | 2/2 | mute | 19 | `[15]` 1 wyciszenie, 0 dźwięk |

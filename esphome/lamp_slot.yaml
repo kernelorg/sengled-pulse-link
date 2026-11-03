@@ -18,11 +18,10 @@ light:
 
 text_sensor:
   - platform: template
+    id: lamp_slot_addr_${slot}
     name: Lamp ${n} address
     icon: mdi:identifier
     entity_category: diagnostic
-    update_interval: 5s
-    lambda: return sengled::slots::text(${slot});
 
 button:
   - platform: template
@@ -71,10 +70,17 @@ select:
           if (i.has_value()) sengled::slot_channel(${slot}, *i);
 
 interval:
-  # publish this lamp's sound state from its speaker_state replies
+  # publish this slot's address and the lamp's sound state
   - interval: 1s
     then:
       - lambda: |-
+          // address: publish only when it changes (no log spam)
+          static std::string last_addr;
+          std::string a = sengled::slots::text(${slot});
+          if (a != last_addr) {
+            last_addr = a;
+            id(lamp_slot_addr_${slot}).publish_state(a);
+          }
           auto &s = sengled::slots::sound[${slot}];
           if (!s.changed) return;
           s.changed = false;
