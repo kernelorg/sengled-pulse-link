@@ -81,8 +81,8 @@ python3 main.py mode=send port=/dev/rfcomm0 cmd=handshake
 `esphome/` contains an ESPHome node that connects an ESP32 to the gateway's
 internal UART and exposes it to Home Assistant:
 
-- lights: all lamps, and single lamps by address (`lamp1_addr`, `lamp2_addr`
-  in `substitutions`, see [Lamp address](#lamp-address));
+- lights: *All lamps*, *Gateway lamp* (the gateway's own lamp) and 8 lamp
+  slots *Lamp 1* … *Lamp 8* (the gateway supports up to 8 lamps);
 - volume, mute, equalizer, channel, audio source, light memory;
 - "identify" buttons (the lamp blinks), lamp on/brightness sensors;
 - adding and removing lamps: enter the lamp address (`00020056`, or the QR
@@ -92,16 +92,22 @@ internal UART and exposes it to Home Assistant:
   *Gateway nodes*. If anything fails while adding, the gateway network code
   is restored.
 
-Order of steps for a new lamp:
+Lamp slots are bound to lamps at run time, there are no addresses in the
+config and no reflashing when lamps change:
 
-1. Flash the config as is. `lamp1_addr` / `lamp2_addr` only create per-lamp
-   light entities; pairing does not need them.
-2. In Home Assistant: power the lamp on near the gateway, put its address (or
-   the QR text) into *Lamp address*, press *Add lamp*, wait until
-   *Pairing status* says `added`. *All lamps* controls it right away.
-3. Only for a separate light entity: put the address into `lamp1_addr` /
-   `lamp2_addr` (or add `lamp3` the same way) and flash again. ESPHome
-   entities are fixed at build time.
+- after boot the slots are filled from the gateway's node list;
+- a lamp added with *Add lamp* takes the first free slot, a removed lamp frees
+  its slot;
+- the binding is stored in flash, so a lamp keeps its slot across reboots;
+- *Lamp N address* shows which lamp is in a slot (`empty` if none). Rename the
+  entities in Home Assistant as you like and hide unused slots.
+
+A freed slot is reused by the next new lamp, so after removing a lamp check
+the names you gave to that slot.
+
+To add a lamp: power it on near the gateway, put its address (or the QR text)
+into *Lamp address*, press *Add lamp*, wait until *Pairing status* says
+`added`.
 
 State is read back from the gateway at boot and every 30 s, so changes made
 from the phone app show up too. The light entities are optimistic.

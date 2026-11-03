@@ -83,9 +83,8 @@ python3 main.py mode=send port=/dev/rfcomm0 cmd=handshake
 W `esphome/` znajduje się węzeł ESPHome: ESP32 podłącza się do wewnętrznego
 UART bramki i udostępnia sterowanie w Home Assistant:
 
-- światło: wszystkie żarówki naraz oraz pojedyncze żarówki według adresu
-  (`lamp1_addr`, `lamp2_addr` w `substitutions`, zob.
-  [Adres żarówki](#adres-żarówki));
+- światło: *All lamps*, *Gateway lamp* (żarówka samej bramki) i 8 slotów
+  *Lamp 1* … *Lamp 8* (bramka obsługuje do 8 żarówek);
 - głośność, wyciszenie, korektor, kanał, źródło dźwięku, pamięć światła;
 - przyciski „identify” (żarówka miga), czujniki włączenia i jasności żarówki;
 - dodawanie i usuwanie żarówek: wpisz adres żarówki (`00020056` lub tekst
@@ -95,16 +94,24 @@ UART bramki i udostępnia sterowanie w Home Assistant:
   nodes*. Jeśli podczas dodawania coś się nie powiedzie, kod sieci bramki
   zostaje przywrócony.
 
-Kolejność kroków dla nowej żarówki:
+Sloty są przypisywane do żarówek w czasie działania: w konfiguracji nie ma
+adresów i przy zmianie żarówek nie trzeba ponownie wgrywać firmware.
 
-1. Wgraj konfigurację bez zmian. `lamp1_addr` / `lamp2_addr` tworzą tylko
-   osobne encje światła, parowanie ich nie potrzebuje.
-2. W Home Assistant: włącz żarówkę blisko bramki, wpisz jej adres (lub tekst
-   QR) w *Lamp address*, naciśnij *Add lamp* i poczekaj na `added`
-   w *Pairing status*. *All lamps* steruje nią od razu.
-3. Tylko jeśli potrzebna jest osobna encja światła: wpisz adres do
-   `lamp1_addr` / `lamp2_addr` (lub dodaj `lamp3` według wzoru) i wgraj
-   ponownie. Encje ESPHome są ustalane podczas kompilacji.
+- po starcie sloty są wypełniane według listy węzłów bramki;
+- żarówka dodana przez *Add lamp* zajmuje pierwszy wolny slot, usunięta
+  zwalnia swój;
+- przypisanie jest zapisane we flash, więc po restarcie żarówka zostaje w swoim
+  slocie;
+- *Lamp N address* pokazuje, która żarówka jest w slocie (`empty`, jeśli
+  pusty). Zmień nazwy encji w Home Assistant według uznania, nieużywane sloty
+  ukryj.
+
+Zwolniony slot zajmie następna nowa żarówka, więc po usunięciu żarówki sprawdź
+nazwę nadaną temu slotowi.
+
+Aby dodać żarówkę: włącz ją blisko bramki, wpisz adres (lub tekst QR)
+w *Lamp address*, naciśnij *Add lamp* i poczekaj na `added` w *Pairing
+status*.
 
 Stan jest odczytywany z bramki przy starcie i co 30 sekund, więc zmiany
 wprowadzone z telefonu też się pojawiają. Encje światła działają w trybie

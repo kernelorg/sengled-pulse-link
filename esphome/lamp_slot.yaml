@@ -1,0 +1,31 @@
+# One runtime-bound lamp slot, included 8 times from sengled-pulse.yaml.
+# vars: slot = 0-based index, n = number shown in entity names.
+
+output:
+  - platform: template
+    id: lamp_slot_out_${slot}
+    type: float
+    write_action:
+      - lambda: sengled::slot_lamp(${slot}, state);
+
+light:
+  - platform: monochromatic
+    name: Lamp ${n}
+    output: lamp_slot_out_${slot}
+    gamma_correct: 1.0
+    default_transition_length: 0s
+
+text_sensor:
+  - platform: template
+    name: Lamp ${n} address
+    icon: mdi:identifier
+    entity_category: diagnostic
+    update_interval: 5s
+    lambda: return sengled::slots::text(${slot});
+
+button:
+  - platform: template
+    name: Identify lamp ${n}
+    entity_category: diagnostic
+    on_press:
+      - lambda: sengled::slot_identify(${slot});

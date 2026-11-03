@@ -3,6 +3,8 @@
 #pragma once
 
 #include "esphome.h"
+#include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -86,8 +88,14 @@ inline void speaker_state(uint32_t dst) { queue(18, dst, 2, 4); }
 inline void audio_source(uint8_t v) { queue(19, ALL, 4, 6, {{15, v}}); }  // 0 3.5mm, 1 BT
 inline void get_audio_source() { queue(16, MASTER, 4, 7); }
 
+// Light outputs are ignored until `ready` is set (a few seconds after boot):
+// on boot ESPHome restores every light and writes it to its output, which
+// would otherwise switch all lamps off whenever the ESP restarts.
+static bool ready = false;
+
 // Same sequences as the phone app.
 inline void all_lamps(float level) {  // 0.0 .. 1.0
+  if (!ready) return;
   int v = (int) (level * 100.0f + 0.5f);
   if (v <= 0) {
     lamp_onoff(ALL, false);
@@ -100,6 +108,7 @@ inline void all_lamps(float level) {  // 0.0 .. 1.0
 }
 
 inline void one_lamp(uint32_t addr, float level) {
+  if (!ready) return;
   int v = (int) (level * 100.0f + 0.5f);
   if (v <= 0) {
     lamp_onoff(addr, false);
@@ -199,6 +208,55 @@ inline bool poll(esphome::uart::UARTComponent *uart, Frame &out) {
 }
 
 
+inline std::string hex8(uint32_t v) {
+  char b[9];
+  snprintf(b, sizeof(b), "%08X", (unsigned) v);
+  return b;
+}
+
+// ---- lamp slots -------------------------------------------------------------
+// ESPHome entities are fixed at build time, so the config has N lamp slots.
+// A slot is bound to a lamp address at run time from the gateway's node list
+// (enum_slaves): known lamps keep their slot, new ones take the first free
+// slot, slots of removed lamps are freed. The table lives in a `globals` with
+// restore_value, so the binding survives reboots.
+namespace slots {
+
+static const size_t N = 8;  // the gateway supports up to 8 lamps
+using Table = std::array<uint32_t, N>;
+static Table *table = nullptr;
+static bool changed = false;
+
+inline void bind(Table *t) { table = t; changed = true; }
+inline uint32_t addr(size_t i) { return (table && i < N) ? (*table)[i] : 0; }
+inline std::string text(size_t i) { return addr(i) ? hex8(addr(i)) : std::string("empty"); }
+
+inline void sync(const std::vector<uint32_t> &nodes) {
+  if (!table) return;
+  Table t = *table;
+  for (auto &a : t)
+    if (a && std::find(nodes.begin(), nodes.end(), a) == nodes.end()) a = 0;
+  for (uint32_t a : nodes) {
+    if (a == MASTER || a == ALL || a == CLIENT) continue;
+    if (std::find(t.begin(), t.end(), a) != t.end()) continue;
+    for (auto &slot : t)
+      if (slot == 0) { slot = a; break; }
+  }
+  if (t != *table) {
+    *table = t;
+    changed = true;
+  }
+}
+
+}  // namespace slots
+
+inline void slot_lamp(size_t i, float level) {
+  if (slots::addr(i)) one_lamp(slots::addr(i), level);
+}
+inline void slot_identify(size_t i) {
+  if (slots::addr(i)) identify(slots::addr(i));
+}
+
 // ---- add / remove lamps ----------------------------------------------------
 // Same procedure as the phone app (SLSpeakerFunction.addNewDevice /
 // deleteDeviceItem in com.sengled.stspeaker 4.2.1):
@@ -248,12 +306,6 @@ inline void set_status(const std::string &s) {
   ESP_LOGI("sengled", "pairing: %s", s.c_str());
 }
 
-inline std::string hex8(uint32_t v) {
-  char b[9];
-  snprintf(b, sizeof(b), "%08X", (unsigned) v);
-  return b;
-}
-
 inline void go(Step s) {
   step = s;
   t0 = esphome::millis();
@@ -298,14 +350,17 @@ inline void on_frame(const Frame &f) {
   } else if (f.is(0, 2) && f.src == MASTER && f.payload.size() >= 4) {
     uint16_t count = f.payload[2] | (f.payload[3] << 8);
     std::string s;
+    std::vector<uint32_t> list;
     for (uint16_t i = 0; i < count && size_t(4 + 4 * i + 3) < f.payload.size(); i++) {
       const uint8_t *p = &f.payload[4 + 4 * i];
       uint32_t a = p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t) p[3] << 24);
+      list.push_back(a);
       if (!s.empty()) s += ", ";
       s += a == MASTER ? std::string("gateway") : hex8(a);
     }
     nodes = s.empty() ? "none" : s;
     nodes_changed = true;
+    slots::sync(list);
   }
 }
 

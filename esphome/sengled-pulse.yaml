@@ -11,27 +11,27 @@
 #   - lamp already paired: the "Gateway nodes" sensor of this node, or
 #     `python3 main.py mode=nodes`.
 #
-# Order of steps
-# --------------
-# 1. Flash this config as is. The lampN_addr values below only create the
-#    per-lamp light entities; pairing does not depend on them.
-# 2. Add the lamp from Home Assistant: power it on near the gateway, put the
-#    address (or the whole QR text) into "Lamp address", press "Add lamp" and
-#    wait about 20 s until "Pairing status" says "added". "All lamps" controls
-#    it right away.
-# 3. Only if you want a separate light entity for the lamp: put its address
-#    into lamp1_addr / lamp2_addr (or add lamp3 the same way) and flash again.
-#    ESPHome entities are fixed at build time.
+# Lamps
+# -----
+# There are 8 lamp slots ("Lamp 1" .. "Lamp 8", the gateway's maximum). They
+# are bound to lamp addresses at run time from the gateway's node list: no
+# addresses in this file, no reflashing when lamps change.
+#   - already paired lamps fill the slots right after boot;
+#   - a lamp added with "Add lamp" takes the first free slot;
+#   - a removed lamp frees its slot;
+#   - the binding is kept in flash, so a lamp keeps its slot after reboots.
+# "Lamp N address" shows which lamp is in a slot ("empty" if none). Rename the
+# entities in Home Assistant as you like; unused slots can be hidden there.
+# The gateway's own lamp is "Gateway lamp".
 #
-# Removing: address into "Lamp address", press "Remove lamp", then drop it
-# from substitutions and flash again.
+# Adding a lamp: power it on near the gateway, put its address (or the whole
+# QR text) into "Lamp address", press "Add lamp", wait about 20 s until
+# "Pairing status" says "added".
+# Removing: address into "Lamp address", press "Remove lamp".
 
 substitutions:
   name: sengled-pulse
   friendly_name: Sengled Pulse
-  # addresses of PAIRED lamps, for per-lamp light entities only (see above)
-  lamp1_addr: "0x00020056"
-  lamp2_addr: "0x0001FEB6"
 
 esphome:
   name: ${name}
@@ -42,12 +42,33 @@ esphome:
     priority: -100
     then:
       - lambda: |-
+          sengled::slots::bind(&id(lamp_slots));
           sengled::handshake(sengled::MASTER);
           sengled::enum_slaves();
           sengled::speaker_state(sengled::MASTER);
           sengled::lamp_state(sengled::MASTER);
           sengled::get_audio_source();
           sengled::query_config(0);
+      # let the lights restore their state without sending anything
+      - delay: 5s
+      - lambda: sengled::ready = true;
+
+globals:
+  # lamp address per slot, 0 = empty (see "Lamps" above)
+  - id: lamp_slots
+    type: std::array<uint32_t, 8>
+    restore_value: true
+    initial_value: "std::array<uint32_t, 8>{}"
+
+packages:
+  lamp1: !include { file: lamp_slot.yaml, vars: { slot: 0, n: 1 } }
+  lamp2: !include { file: lamp_slot.yaml, vars: { slot: 1, n: 2 } }
+  lamp3: !include { file: lamp_slot.yaml, vars: { slot: 2, n: 3 } }
+  lamp4: !include { file: lamp_slot.yaml, vars: { slot: 3, n: 4 } }
+  lamp5: !include { file: lamp_slot.yaml, vars: { slot: 4, n: 5 } }
+  lamp6: !include { file: lamp_slot.yaml, vars: { slot: 5, n: 6 } }
+  lamp7: !include { file: lamp_slot.yaml, vars: { slot: 6, n: 7 } }
+  lamp8: !include { file: lamp_slot.yaml, vars: { slot: 7, n: 8 } }
 
 esp32:
   board: esp32dev
@@ -124,15 +145,10 @@ output:
     write_action:
       - lambda: sengled::all_lamps(state);
   - platform: template
-    id: lamp1_out
+    id: gateway_lamp_out
     type: float
     write_action:
-      - lambda: sengled::one_lamp(${lamp1_addr}, state);
-  - platform: template
-    id: lamp2_out
-    type: float
-    write_action:
-      - lambda: sengled::one_lamp(${lamp2_addr}, state);
+      - lambda: sengled::one_lamp(sengled::MASTER, state);
 
 light:
   # transitions would flood the UART with brightness frames
@@ -142,13 +158,8 @@ light:
     gamma_correct: 1.0
     default_transition_length: 0s
   - platform: monochromatic
-    name: Lamp 1
-    output: lamp1_out
-    gamma_correct: 1.0
-    default_transition_length: 0s
-  - platform: monochromatic
-    name: Lamp 2
-    output: lamp2_out
+    name: Gateway lamp
+    output: gateway_lamp_out
     gamma_correct: 1.0
     default_transition_length: 0s
 
@@ -261,16 +272,6 @@ button:
     entity_category: diagnostic
     on_press:
       - lambda: sengled::enum_slaves();
-  - platform: template
-    name: Identify lamp 1
-    entity_category: diagnostic
-    on_press:
-      - lambda: sengled::identify(${lamp1_addr});
-  - platform: template
-    name: Identify lamp 2
-    entity_category: diagnostic
-    on_press:
-      - lambda: sengled::identify(${lamp2_addr});
 
 sensor:
   - platform: template
