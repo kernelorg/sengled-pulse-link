@@ -83,15 +83,15 @@ python3 main.py mode=send port=/dev/rfcomm0 cmd=handshake
 W `esphome/` znajduje się węzeł ESPHome: ESP32 podłącza się do wewnętrznego
 UART bramki i udostępnia sterowanie w Home Assistant:
 
-- światło: *All lamps*, *Gateway lamp* (żarówka samej bramki; bezużyteczna,
-  jeśli *Gateway type* pokazuje `audio box`, np. w Pulse Link) i 8 slotów
+- światło: *All lamps* i 8 slotów
   *Lamp 1* … *Lamp 8* (bramka obsługuje do 8 żarówek); każdy slot ma też
-  własne *volume*, *mute* i *channel*, odczytywane z żarówki;
+  własne *volume*, *mute* i *channel*; wł./wył., jasność i dźwięk są odczytywane
+  z żarówki;
 - głośność, wyciszenie, korektor, kanał, źródło dźwięku, pamięć światła dla
   wszystkich żarówek;
 - *Gateway type*: nazwa bramki i productID z `generic_info`, np.
   `C01-BR30 Link (productID 2, audio box, no lamp)`;
-- przyciski „identify” (żarówka miga), czujniki włączenia i jasności żarówki;
+- przyciski „identify” (żarówka miga);
 - dodawanie i usuwanie żarówek: wpisz adres żarówki (`00020056` lub tekst
   QR `...;AD:00020056`) w *Lamp address* i naciśnij *Add lamp* /
   *Remove lamp*. Procedura jest taka sama jak w aplikacji i trwa około
@@ -198,7 +198,7 @@ zwraca się do każdego węzła pod otrzymanym adresem albo używa rozgłoszenia
 | 2/0 | channel | 19 | `[15]` 0 prawy, 1 lewy, 2 lewy+prawy |
 | 2/1 | eq | 19 | `[15]` 0 normal, 1 pop, 2 jazz, 3 classic, 4 rock, 5 movie |
 | 2/2 | mute | 19 | `[15]` 1 wyciszenie, 0 dźwięk |
-| 2/3 | volume | 20 | `[15]` głośność 0..100, `[16]` = `FF` |
+| 2/3 | volume | 20 | `[15]` głośność 0..100, `[16]` = `FF`; zmienia tylko żarówki, własne wyjście audio Pulse Link zostaje na swoim poziomie (przy ≤ 5 tylko milknie) |
 | 2/4 | speaker_state | 18 | odpowiedź `[15]` kanał, `[16]` eq, `[17]` mute, `[18]` głośność % |
 | 4/0 | connect_code | 16 | odpowiedź `[13..16]` kod sieci = SN bramki (np. `00096CC0`) |
 | 4/1 | set_connect_code | 20 | `[13..16]` kod do zapisania w żarówce; `00FFFFFF` ją odłącza |

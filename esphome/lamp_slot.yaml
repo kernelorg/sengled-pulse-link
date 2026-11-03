@@ -1,4 +1,5 @@
-# One runtime-bound lamp slot (light, volume, mute, channel, address, identify),
+# One runtime-bound lamp slot (light with state read-back, volume, mute,
+# channel, address, identify),
 # included 8 times from sengled-pulse.yaml.
 # vars: slot = 0-based index, n = number shown in entity names.
 
@@ -11,6 +12,7 @@ output:
 
 light:
   - platform: monochromatic
+    id: lamp_slot_light_${slot}
     name: Lamp ${n}
     output: lamp_slot_out_${slot}
     gamma_correct: 1.0
@@ -80,6 +82,17 @@ interval:
           if (a != last_addr) {
             last_addr = a;
             id(lamp_slot_addr_${slot}).publish_state(a);
+          }
+          // light: show the lamp's real on/off and brightness without
+          // writing it back to the lamp (no output write is triggered)
+          auto &l = sengled::slots::light[${slot}];
+          if (l.changed) {
+            l.changed = false;
+            auto *ls = id(lamp_slot_light_${slot});
+            ls->remote_values.set_state(l.on);
+            if (l.on && l.level > 0) ls->remote_values.set_brightness(l.level / 100.0f);
+            ls->current_values = ls->remote_values;
+            ls->publish_state();
           }
           auto &s = sengled::slots::sound[${slot}];
           if (!s.changed) return;

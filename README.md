@@ -81,14 +81,14 @@ python3 main.py mode=send port=/dev/rfcomm0 cmd=handshake
 `esphome/` contains an ESPHome node that connects an ESP32 to the gateway's
 internal UART and exposes it to Home Assistant:
 
-- lights: *All lamps*, *Gateway lamp* (the gateway's own lamp; useless if
-  *Gateway type* says `audio box`, e.g. a Pulse Link) and 8 lamp
+- lights: *All lamps* and 8 lamp
   slots *Lamp 1* … *Lamp 8* (the gateway supports up to 8 lamps); each slot
-  also has its own *volume*, *mute* and *channel*, read back from the lamp;
+  also has its own *volume*, *mute* and *channel*; on/off, brightness and sound
+  are read back from the lamp;
 - volume, mute, equalizer, channel, audio source, light memory for all lamps;
 - *Gateway type*: gateway name and productID from `generic_info`, e.g.
   `C01-BR30 Link (productID 2, audio box, no lamp)`;
-- "identify" buttons (the lamp blinks), lamp on/brightness sensors;
+- "identify" buttons (the lamp blinks);
 - adding and removing lamps: enter the lamp address (`00020056`, or the QR
   text `...;AD:00020056`) into *Lamp address* and press *Add lamp* /
   *Remove lamp*. The procedure is the same as in the app and takes about
@@ -190,7 +190,7 @@ each node by the address it got back, or uses broadcast.
 | 2/0 | channel | 19 | `[15]` 0 right, 1 left, 2 left+right |
 | 2/1 | eq | 19 | `[15]` 0 normal, 1 pop, 2 jazz, 3 classic, 4 rock, 5 movie |
 | 2/2 | mute | 19 | `[15]` 1 mute, 0 unmute |
-| 2/3 | volume | 20 | `[15]` volume 0..100, `[16]` = `FF` |
+| 2/3 | volume | 20 | `[15]` volume 0..100, `[16]` = `FF`; sets the lamps only, a Pulse Link's own audio output keeps its level (it only goes silent at ≤ 5) |
 | 2/4 | speaker_state | 18 | reply `[15]` channel, `[16]` eq, `[17]` mute, `[18]` volume % |
 | 4/0 | connect_code | 16 | reply `[13..16]` network code = gateway SN (e.g. `00096CC0`) |
 | 4/1 | set_connect_code | 20 | `[13..16]` code to write into a lamp; `00FFFFFF` unbinds it |
