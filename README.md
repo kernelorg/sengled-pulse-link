@@ -18,6 +18,21 @@ and the frames it writes appear unchanged on the UART. The module itself only
 adds text status lines such as `\r\nSS=01,<BD address>\r\n`, which most
 likely report the connection state.
 
+## Lamp address
+
+Every lamp has a fixed 4-byte address (AD), e.g. `00020056`. Commands for one
+lamp and pairing use it.
+
+- **New lamp:** the address is in the QR code on the lamp. Scan it with any QR
+  reader; the text looks like `SN:14411008EU01926;AD:00020056`, and the address
+  is the part after `AD:`. The phone app reads the same QR code when you add a
+  lamp. `main.py` and ESPHome accept either the address or the whole QR text.
+- **Lamp already paired:** `python3 main.py mode=nodes`, or the *Gateway nodes*
+  sensor in ESPHome.
+
+To pair a new lamp: power it on near the gateway, then
+`python3 main.py mode=add dst=<address>` or *Add lamp* in ESPHome (see below).
+
 ## main.py
 
 Build, send, sniff and decode frames. Arguments are `key=value` pairs.
@@ -34,11 +49,15 @@ python3 main.py mode=build cmd=lamp_off dst=all          # print frame only
 python3 main.py mode=send port=/dev/rfcomm0 cmd=volume value=40 dst=all
 python3 main.py mode=send cmd=lamp_state dst=00020056
 python3 main.py mode=decode hex="7E 00 00 00 00 FE FF FF FF 00 00 01 00 01 FD 00 7E"
+python3 main.py mode=nodes                               # lamps known to the gateway
+python3 main.py mode=add dst=00020056                    # pair a lamp, about 20 s
+python3 main.py mode=add dst="SN:14411008EU01926;AD:00020056"   # the same, QR text
+python3 main.py mode=remove dst=0001FEB6                 # unpair a lamp
 ```
 
 | key | default | meaning |
 |---|---|---|
-| `mode` | `sniff` | `sniff`, `send`, `build`, `decode` |
+| `mode` | `sniff` | `sniff`, `send`, `build`, `decode`, `nodes`, `add`, `remove` |
 | `port` | `/dev/ttyUSB0` | serial port (UART adapter, or `/dev/rfcomm0` over Bluetooth) |
 | `baud` | `115200` | baud rate |
 | `cmd` | | command name, see `help=commands` |
@@ -63,9 +82,26 @@ python3 main.py mode=send port=/dev/rfcomm0 cmd=handshake
 internal UART and exposes it to Home Assistant:
 
 - lights: all lamps, and single lamps by address (`lamp1_addr`, `lamp2_addr`
-  in `substitutions`; get the addresses with `cmd=enum_slaves`);
+  in `substitutions`, see [Lamp address](#lamp-address));
 - volume, mute, equalizer, channel, audio source, light memory;
-- "identify" buttons (the lamp blinks), lamp on/brightness sensors.
+- "identify" buttons (the lamp blinks), lamp on/brightness sensors;
+- adding and removing lamps: enter the lamp address (`00020056`, or the QR
+  text `...;AD:00020056`) into *Lamp address* and press *Add lamp* /
+  *Remove lamp*. The procedure is the same as in the app and takes about
+  20 s; progress is shown in *Pairing status*, the gateway's lamp list in
+  *Gateway nodes*. If anything fails while adding, the gateway network code
+  is restored.
+
+Order of steps for a new lamp:
+
+1. Flash the config as is. `lamp1_addr` / `lamp2_addr` only create per-lamp
+   light entities; pairing does not need them.
+2. In Home Assistant: power the lamp on near the gateway, put its address (or
+   the QR text) into *Lamp address*, press *Add lamp*, wait until
+   *Pairing status* says `added`. *All lamps* controls it right away.
+3. Only for a separate light entity: put the address into `lamp1_addr` /
+   `lamp2_addr` (or add `lamp3` the same way) and flash again. ESPHome
+   entities are fixed at build time.
 
 State is read back from the gateway at boot and every 30 s, so changes made
 from the phone app show up too. The light entities are optimistic.

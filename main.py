@@ -16,15 +16,20 @@ Modes (mode=...):
   send    build a command, send it, print and decode replies
   build   only print the frame as hex, no serial port needed
   decode  decode a frame given as hex=...
+  nodes   list the lamps known to the gateway
+  add     add (pair) the lamp dst=... to the gateway, about 20 s
+  remove  remove (unpair) the lamp dst=... from the gateway
 
 Keys:
-  mode=sniff|send|build|decode
+  mode=sniff|send|build|decode|nodes|add|remove
   port=/dev/ttyUSB0     serial port, or /dev/rfcomm0 for the Bluetooth SPP
   baud=115200           baud rate (the module UART runs at 115200)
   cmd=NAME              command for send/build, see help=commands
   dst=master            target: master (00000000, the gateway itself),
                         all (FFFFFFFF, broadcast), or a lamp address
-                        as 8 hex digits big-endian, e.g. 00020056
+                        as 8 hex digits big-endian, e.g. 00020056;
+                        the lamp label / QR text "SN:...;AD:00020056"
+                        is accepted too
   value=N               first parameter (decimal or 0x..)
   value2=N              second parameter (brightness only)
   timeout=3             seconds to wait for replies in send mode
@@ -37,6 +42,10 @@ Examples:
   python3 main.py mode=send port=/dev/rfcomm0 cmd=volume value=40 dst=all
   python3 main.py mode=send cmd=lamp_state dst=00020056
   python3 main.py mode=decode hex="7E FE FF FF FF 00 00 00 00 00 00 01 00 FC 00 7E"
+  python3 main.py mode=nodes
+  python3 main.py mode=add dst=00020056
+  python3 main.py mode=add dst="SN:14411008EU01926;AD:00020056"
+  python3 main.py mode=remove dst=0001FEB6
 """
 
 ADDR_NAMES = {
@@ -112,7 +121,10 @@ def num(s, what):
 
 
 def parse_addr(s):
-    s = (s or "master").lower()
+    s = (s or "master").strip()
+    if "AD:" in s.upper():                      # label / QR text "...;AD:00020056"
+        s = s[s.upper().rindex("AD:") + 3:]
+    s = s.lower()
     if s == "master":
         return 0
     if s in ("all", "broadcast"):
@@ -317,6 +329,131 @@ def open_port(opts):
                          num(opts.get("baud", "115200"), "baud"), timeout=0.2)
 
 
+class Gateway:
+    """Request/reply helper plus the app's add/remove lamp procedures
+    (SLSpeakerFunction.addNewDevice / deleteDeviceItem in the app 4.2.1)."""
+
+    SETTLE = 8.5      # the app waits 8.5 s after changing a network code
+    REPLY = 3.0       # the app's reply timeout
+    TRIES = 3
+    UNBOUND = 0x00FFFFFF
+
+    def __init__(self, ser, raw=False):
+        self.ser = ser
+        self.rd = FrameReader(ser)
+        self.raw = raw
+
+    def send(self, name, dst=0, value=None, value2=None):
+        pkt = build(name, dst, None if value is None else str(value),
+                    None if value2 is None else str(value2))
+        if self.raw:
+            print("    >> " + pkt.hex(" ").upper())
+        self.ser.write(pkt)
+        self.ser.flush()
+        time.sleep(0.08)   # the gateway CPU is slow, keep a gap between frames
+
+    def request(self, name, dst=0, value=None, value2=None):
+        """Send and return the payload of the matching reply, or None."""
+        key = BY_NAME[name]
+        self.send(name, dst, value, value2)
+        deadline = time.monotonic() + self.REPLY
+        while (left := deadline - time.monotonic()) > 0:
+            kind, f = self.rd.read(left)
+            if kind is None:
+                break
+            if kind != "frame" or len(f) < 15:
+                continue
+            if self.raw:
+                print("    << " + f.hex(" ").upper())
+            src = int.from_bytes(f[1:5], "little")
+            fdst = int.from_bytes(f[5:9], "little")
+            if (f[9], f[11]) == key and src == dst and fdst == 0xFFFFFFFE \
+                    and checksum(f) == f[len(f) - 3]:
+                return f[13:len(f) - 3]
+        return None
+
+    def code(self):
+        p = self.request("connect_code", 0)
+        return None if p is None or len(p) < 4 else int.from_bytes(p[0:4], "little")
+
+    def nodes(self):
+        p = self.request("enum_slaves", 0)
+        if p is None or len(p) < 4:
+            return None
+        count = int.from_bytes(p[2:4], "little")
+        return [int.from_bytes(p[4 + 4 * i:8 + 4 * i], "little")
+                for i in range(count) if 8 + 4 * i <= len(p)]
+
+    def print_nodes(self):
+        n = self.nodes()
+        if n is None:
+            print("no reply from gateway")
+            return False
+        print("gateway nodes: " + (", ".join("gateway" if a == 0 else f"{a:08X}" for a in n) or "none"))
+        return True
+
+    def add(self, lamp):
+        say = lambda s: print(f"[{lamp:08X}] {s}")
+        cc = self.code()
+        if cc is None:
+            say("no reply from gateway")
+            return False
+        if cc in (0, self.UNBOUND):
+            # the app would invent a new code here and drop every lamp; don't
+            say(f"gateway network code is {cc:08X}, fix it with the app first")
+            return False
+        say(f"gateway network code {cc:08X}")
+        try:
+            for hs in range(1, self.TRIES + 1):
+                for t in range(1, self.TRIES + 1):
+                    say("opening network (gateway code -> 0), waiting 8.5 s")
+                    self.send("set_connect_code", 0, 0)
+                    time.sleep(self.SETTLE)
+                    if self.code() == 0:
+                        break
+                else:
+                    raise RuntimeError("gateway did not accept code 0")
+                for t in range(1, self.TRIES + 1):
+                    say(f"writing code {cc:08X} to the lamp and back to the gateway, waiting 8.5 s")
+                    self.send("set_connect_code", lamp, cc)
+                    self.send("set_connect_code", 0, cc)
+                    time.sleep(self.SETTLE)
+                    if self.code() == cc:
+                        break
+                else:
+                    raise RuntimeError("gateway code was not restored")
+                if self.request("handshake", lamp) is not None:
+                    break
+                say(f"lamp does not answer the handshake (try {hs}/{self.TRIES})")
+            else:
+                raise RuntimeError("lamp does not answer (power it on, close to the gateway)")
+            say("handshake ok, adding to the gateway table")
+            self.send("set_id_address", 0, f"{lamp:08X}", 0)
+            time.sleep(self.REPLY)
+        except (RuntimeError, KeyboardInterrupt) as e:
+            say(f"failed: {e or 'interrupted'}; restoring gateway code {cc:08X}")
+            self.send("set_connect_code", 0, cc)
+            self.print_nodes()
+            return False
+        say("added")
+        self.print_nodes()
+        return True
+
+    def remove(self, lamp):
+        say = lambda s: print(f"[{lamp:08X}] {s}")
+        answered = any(self.request("handshake", lamp) is not None for _ in range(2))
+        if answered:
+            say("handshake ok, unbinding the lamp (code 00FFFFFF)")
+            self.send("set_connect_code", lamp, self.UNBOUND)
+        else:
+            say("lamp does not answer, removing it from the gateway table only")
+        self.send("set_id_address", 0, f"{lamp:08X}", 1)
+        time.sleep(1)
+        say("removed")
+        self.print_nodes()
+        return True
+
+
 def print_commands():
     print("Commands (cmd=...):")
     for key, (name, _, _, desc) in sorted(COMMANDS.items()):
@@ -367,6 +504,18 @@ def main():
         if b[:1] != b"\x7e" or b[-1:] != b"\x7e":
             die("frame must start and end with 7E")
         print(decode(b"\x7e" + unescape(b[1:-1]) + b"\x7e"))
+    elif mode == "nodes":
+        if not Gateway(open_port(opts), raw).print_nodes():
+            sys.exit(1)
+    elif mode in ("add", "remove"):
+        if "dst" not in opts:
+            die(f"mode={mode} needs dst=<lamp address>")
+        lamp = parse_addr(opts["dst"])
+        if lamp in (0, 0xFFFFFFFF, 0xFFFFFFFE):
+            die("dst= must be a lamp address, not master/all")
+        gw = Gateway(open_port(opts), raw)
+        ok = gw.add(lamp) if mode == "add" else gw.remove(lamp)
+        sys.exit(0 if ok else 1)
     elif mode == "sniff":
         rd = FrameReader(open_port(opts))
         try:

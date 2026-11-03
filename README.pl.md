@@ -18,6 +18,22 @@ a zapisane przez niego ramki pojawiają się na UART bez zmian. Sam moduł dodaj
 jedynie tekstowe linie stanu w rodzaju `\r\nSS=01,<adres BD>\r\n`, które
 najprawdopodobniej informują o stanie połączenia.
 
+## Adres żarówki
+
+Każda żarówka ma stały 4-bajtowy adres (AD), np. `00020056`. Jest potrzebny
+do poleceń dla pojedynczej żarówki i do parowania.
+
+- **Nowa żarówka:** adres jest zapisany w kodzie QR na żarówce. Zeskanuj go
+  dowolnym czytnikiem QR: tekst wygląda jak `SN:14411008EU01926;AD:00020056`,
+  a adres to część po `AD:`. Aplikacja na telefonie przy dodawaniu żarówki
+  odczytuje ten sam kod QR. `main.py` i ESPHome przyjmują zarówno sam adres,
+  jak i cały tekst QR.
+- **Żarówka już sparowana:** `python3 main.py mode=nodes` lub czujnik
+  *Gateway nodes* w ESPHome.
+
+Aby sparować nową żarówkę: włącz ją blisko bramki, potem
+`python3 main.py mode=add dst=<adres>` albo *Add lamp* w ESPHome (zob. niżej).
+
 ## main.py
 
 Budowanie, wysyłanie, podsłuchiwanie i dekodowanie ramek. Argumenty podaje się
@@ -35,11 +51,15 @@ python3 main.py mode=build cmd=lamp_off dst=all          # tylko wypisz ramkę
 python3 main.py mode=send port=/dev/rfcomm0 cmd=volume value=40 dst=all
 python3 main.py mode=send cmd=lamp_state dst=00020056
 python3 main.py mode=decode hex="7E 00 00 00 00 FE FF FF FF 00 00 01 00 01 FD 00 7E"
+python3 main.py mode=nodes                               # żarówki znane bramce
+python3 main.py mode=add dst=00020056                    # sparuj żarówkę, ok. 20 s
+python3 main.py mode=add dst="SN:14411008EU01926;AD:00020056"   # to samo, tekst QR
+python3 main.py mode=remove dst=0001FEB6                 # rozparuj żarówkę
 ```
 
 | klucz | domyślnie | znaczenie |
 |---|---|---|
-| `mode` | `sniff` | `sniff`, `send`, `build`, `decode` |
+| `mode` | `sniff` | `sniff`, `send`, `build`, `decode`, `nodes`, `add`, `remove` |
 | `port` | `/dev/ttyUSB0` | port szeregowy (adapter UART lub `/dev/rfcomm0` przez Bluetooth) |
 | `baud` | `115200` | prędkość transmisji |
 | `cmd` | | nazwa polecenia, zob. `help=commands` |
@@ -64,10 +84,27 @@ W `esphome/` znajduje się węzeł ESPHome: ESP32 podłącza się do wewnętrzne
 UART bramki i udostępnia sterowanie w Home Assistant:
 
 - światło: wszystkie żarówki naraz oraz pojedyncze żarówki według adresu
-  (`lamp1_addr`, `lamp2_addr` w `substitutions`; adresy można odczytać przez
-  `cmd=enum_slaves`);
+  (`lamp1_addr`, `lamp2_addr` w `substitutions`, zob.
+  [Adres żarówki](#adres-żarówki));
 - głośność, wyciszenie, korektor, kanał, źródło dźwięku, pamięć światła;
-- przyciski „identify” (żarówka miga), czujniki włączenia i jasności żarówki.
+- przyciski „identify” (żarówka miga), czujniki włączenia i jasności żarówki;
+- dodawanie i usuwanie żarówek: wpisz adres żarówki (`00020056` lub tekst
+  QR `...;AD:00020056`) w *Lamp address* i naciśnij *Add lamp* /
+  *Remove lamp*. Procedura jest taka sama jak w aplikacji i trwa około
+  20 sekund; postęp widać w *Pairing status*, listę żarówek bramki w *Gateway
+  nodes*. Jeśli podczas dodawania coś się nie powiedzie, kod sieci bramki
+  zostaje przywrócony.
+
+Kolejność kroków dla nowej żarówki:
+
+1. Wgraj konfigurację bez zmian. `lamp1_addr` / `lamp2_addr` tworzą tylko
+   osobne encje światła, parowanie ich nie potrzebuje.
+2. W Home Assistant: włącz żarówkę blisko bramki, wpisz jej adres (lub tekst
+   QR) w *Lamp address*, naciśnij *Add lamp* i poczekaj na `added`
+   w *Pairing status*. *All lamps* steruje nią od razu.
+3. Tylko jeśli potrzebna jest osobna encja światła: wpisz adres do
+   `lamp1_addr` / `lamp2_addr` (lub dodaj `lamp3` według wzoru) i wgraj
+   ponownie. Encje ESPHome są ustalane podczas kompilacji.
 
 Stan jest odczytywany z bramki przy starcie i co 30 sekund, więc zmiany
 wprowadzone z telefonu też się pojawiają. Encje światła działają w trybie

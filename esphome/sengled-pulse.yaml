@@ -1,11 +1,35 @@
 # ESPHome node that talks to the Sengled Pulse Link (C01-BR30) gateway CPU
 # over its internal UART (the link between the CPU and the EH-MB05 module).
 # Protocol: see ../README.md. Helpers: sengled_pulse.h (same directory).
+#
+# Lamp address (AD)
+# -----------------
+# Every lamp has a fixed 4-byte address, e.g. 00020056. Where to find it:
+#   - new lamp: the QR code on the lamp. Scan it with any QR reader; the text
+#     looks like "SN:14411008EU01926;AD:00020056", the address is after "AD:".
+#     The phone app reads the same QR code when adding a lamp.
+#   - lamp already paired: the "Gateway nodes" sensor of this node, or
+#     `python3 main.py mode=nodes`.
+#
+# Order of steps
+# --------------
+# 1. Flash this config as is. The lampN_addr values below only create the
+#    per-lamp light entities; pairing does not depend on them.
+# 2. Add the lamp from Home Assistant: power it on near the gateway, put the
+#    address (or the whole QR text) into "Lamp address", press "Add lamp" and
+#    wait about 20 s until "Pairing status" says "added". "All lamps" controls
+#    it right away.
+# 3. Only if you want a separate light entity for the lamp: put its address
+#    into lamp1_addr / lamp2_addr (or add lamp3 the same way) and flash again.
+#    ESPHome entities are fixed at build time.
+#
+# Removing: address into "Lamp address", press "Remove lamp", then drop it
+# from substitutions and flash again.
 
 substitutions:
   name: sengled-pulse
   friendly_name: Sengled Pulse
-  # lamp addresses from `enum_slaves` (python3 main.py mode=send cmd=enum_slaves)
+  # addresses of PAIRED lamps, for per-lamp light entities only (see above)
   lamp1_addr: "0x00020056"
   lamp2_addr: "0x0001FEB6"
 
@@ -19,6 +43,7 @@ esphome:
     then:
       - lambda: |-
           sengled::handshake(sengled::MASTER);
+          sengled::enum_slaves();
           sengled::speaker_state(sengled::MASTER);
           sengled::lamp_state(sengled::MASTER);
           sengled::get_audio_source();
@@ -56,6 +81,7 @@ interval:
       - lambda: |-
           sengled::Frame f;
           while (sengled::poll(id(pulse_uart), f)) {
+            sengled::pairing::on_frame(f);
             if (f.dst != sengled::CLIENT) continue;
             if (f.is(2, 4) && f.src == sengled::MASTER) {        // speaker_state
               auto ch = id(channel_sel).at(f.at(2));
@@ -73,6 +99,15 @@ interval:
             } else if (f.is(0, 12) && f.at(0) == 0) {            // light memory
               id(memory_sw).publish_state(f.at(2) != 0);
             }
+          }
+          sengled::pairing::loop();
+          if (sengled::pairing::status_changed) {
+            sengled::pairing::status_changed = false;
+            id(pair_status).publish_state(sengled::pairing::status);
+          }
+          if (sengled::pairing::nodes_changed) {
+            sengled::pairing::nodes_changed = false;
+            id(gw_nodes).publish_state(sengled::pairing::nodes);
           }
   # refresh state (also picks up changes made from the phone app)
   - interval: 30s
@@ -183,7 +218,49 @@ select:
           auto i = id(source_sel).index_of(x);
           if (i.has_value()) sengled::audio_source(*i);
 
+text:
+  # lamp address for add/remove: "00020056", or the label/QR text "...;AD:00020056"
+  - platform: template
+    id: pair_addr
+    name: Lamp address
+    icon: mdi:identifier
+    entity_category: config
+    mode: text
+    max_length: 64
+    optimistic: true
+    restore_value: true
+
+text_sensor:
+  - platform: template
+    id: pair_status
+    name: Pairing status
+    icon: mdi:link-variant
+    entity_category: diagnostic
+  - platform: template
+    id: gw_nodes
+    name: Gateway nodes
+    icon: mdi:lightbulb-group
+    entity_category: diagnostic
+
 button:
+  - platform: template
+    name: Add lamp
+    icon: mdi:link-plus
+    entity_category: config
+    on_press:
+      - lambda: sengled::pairing::start_add(id(pair_addr).state);
+  - platform: template
+    name: Remove lamp
+    icon: mdi:link-off
+    entity_category: config
+    on_press:
+      - lambda: sengled::pairing::start_remove(id(pair_addr).state);
+  - platform: template
+    name: Refresh node list
+    icon: mdi:refresh
+    entity_category: diagnostic
+    on_press:
+      - lambda: sengled::enum_slaves();
   - platform: template
     name: Identify lamp 1
     entity_category: diagnostic

@@ -3,7 +3,11 @@
 #pragma once
 
 #include "esphome.h"
+#include <cctype>
+#include <cstdio>
+#include <cstdlib>
 #include <deque>
+#include <string>
 #include <initializer_list>
 #include <utility>
 #include <vector>
@@ -106,6 +110,39 @@ inline void one_lamp(uint32_t addr, float level) {
   lamp_onoff(addr, true);
 }
 
+// ---- pairing commands -----------------------------------------------------
+static const uint32_t UNBOUND_CODE = 0x00FFFFFFu;  // code the app writes into a removed lamp
+
+inline void enum_slaves() { queue(16, MASTER, 0, 2); }
+inline void query_connect_code() { queue(16, MASTER, 4, 0); }
+inline void set_connect_code(uint32_t dst, uint32_t code) {
+  queue(20, dst, 4, 1,
+        {{13, uint8_t(code)}, {14, uint8_t(code >> 8)}, {15, uint8_t(code >> 16)}, {16, uint8_t(code >> 24)}});
+}
+// gateway node table: add (del=false) or delete a lamp address
+inline void set_id_address(uint32_t addr, bool del) {
+  queue(24, MASTER, 4, 2,
+        {{13, uint8_t(del ? 1 : 0)},
+         {17, uint8_t(addr)},
+         {18, uint8_t(addr >> 8)},
+         {19, uint8_t(addr >> 16)},
+         {20, uint8_t(addr >> 24)}});
+}
+
+// "00020056", "0x00020056" or the QR/label text "...;AD:00020056" -> address
+inline bool parse_addr(const std::string &in, uint32_t &out) {
+  std::string s = in;
+  size_t p = s.find("AD:");
+  if (p != std::string::npos) s = s.substr(p + 3);
+  if (s.rfind("0x", 0) == 0 || s.rfind("0X", 0) == 0) s = s.substr(2);
+  while (!s.empty() && (s.back() == ' ' || s.back() == '\r' || s.back() == '\n')) s.pop_back();
+  if (s.empty() || s.size() > 8) return false;
+  for (char c : s)
+    if (!isxdigit((unsigned char) c)) return false;
+  out = (uint32_t) strtoul(s.c_str(), nullptr, 16);
+  return out != MASTER && out != ALL && out != CLIENT;
+}
+
 // Call often (every ~20 ms): sends the next queued frame when the gap has
 // passed and returns true each time a valid frame was received into `out`.
 inline bool poll(esphome::uart::UARTComponent *uart, Frame &out) {
@@ -161,4 +198,241 @@ inline bool poll(esphome::uart::UARTComponent *uart, Frame &out) {
   return false;
 }
 
+
+// ---- add / remove lamps ----------------------------------------------------
+// Same procedure as the phone app (SLSpeakerFunction.addNewDevice /
+// deleteDeviceItem in com.sengled.stspeaker 4.2.1):
+//
+// add:    read gateway code CC -> set gateway code to 0 ("universal") ->
+//         wait 8.5 s, check it is 0 -> write CC into the lamp and back into the
+//         gateway -> wait 8.5 s, check it is CC -> handshake the lamp ->
+//         add the lamp to the gateway table -> wait 3 s -> enum_slaves
+// remove: handshake the lamp (2 tries) -> if it answers, write 00FFFFFF into
+//         it -> delete it from the gateway table -> enum_slaves
+//
+// On any failure while adding, the gateway code is restored to CC.
+
+namespace pairing {
+
+enum Step : uint8_t {
+  IDLE,
+  A_QUERY_CC, A_WAIT_CC,
+  A_SET_ZERO, A_WAIT_ZERO, A_CHECK_ZERO,
+  A_SET_CC, A_WAIT_SET_CC, A_CHECK_CC,
+  A_HANDSHAKE, A_WAIT_HANDSHAKE,
+  A_WAIT_ADDED,
+  D_HANDSHAKE, D_WAIT_HANDSHAKE,
+  D_WAIT_DONE,
+};
+
+static const uint32_t SETTLE_MS = 8500;  // the app waits 8.5 s after a code change
+static const uint32_t REPLY_MS = 3000;   // the app's reply timeout
+static const uint8_t TRIES = 3;
+
+static Step step = IDLE;
+static uint32_t target = 0;   // lamp address
+static uint32_t cc = 0;       // gateway network code
+static uint32_t t0 = 0;
+static uint8_t tries = 0;     // retries of the current stage
+static uint8_t hs_tries = 0;  // handshake rounds while adding
+static bool got_reply = false;
+static uint32_t reply_code = 0;
+static std::string status = "idle";
+static bool status_changed = true;
+static std::string nodes;
+static bool nodes_changed = false;
+
+inline void set_status(const std::string &s) {
+  status = s;
+  status_changed = true;
+  ESP_LOGI("sengled", "pairing: %s", s.c_str());
+}
+
+inline std::string hex8(uint32_t v) {
+  char b[9];
+  snprintf(b, sizeof(b), "%08X", (unsigned) v);
+  return b;
+}
+
+inline void go(Step s) {
+  step = s;
+  t0 = esphome::millis();
+  got_reply = false;
+}
+
+inline void fail(const std::string &why, bool restore_cc) {
+  if (restore_cc && cc != 0) set_connect_code(MASTER, cc);
+  set_status("failed: " + why + " (" + hex8(target) + ")");
+  step = IDLE;
+  enum_slaves();
+}
+
+inline bool busy() { return step != IDLE; }
+
+inline void start_add(const std::string &addr_text) {
+  if (busy()) { set_status("busy"); return; }
+  if (!parse_addr(addr_text, target)) { set_status("bad address: " + addr_text); return; }
+  cc = 0;
+  tries = 0;
+  hs_tries = 0;
+  set_status("adding " + hex8(target) + ": reading gateway code");
+  go(A_QUERY_CC);
+}
+
+inline void start_remove(const std::string &addr_text) {
+  if (busy()) { set_status("busy"); return; }
+  if (!parse_addr(addr_text, target)) { set_status("bad address: " + addr_text); return; }
+  tries = 0;
+  set_status("removing " + hex8(target));
+  go(D_HANDSHAKE);
+}
+
+// feed every received frame here
+inline void on_frame(const Frame &f) {
+  if (f.dst != CLIENT) return;
+  if (f.is(4, 0) && f.src == MASTER && f.payload.size() >= 4) {
+    reply_code = f.payload[0] | (f.payload[1] << 8) | (f.payload[2] << 16) | ((uint32_t) f.payload[3] << 24);
+    got_reply = true;
+  } else if (f.is(0, 1) && f.src == target && step != IDLE) {
+    got_reply = true;  // the app treats any handshake reply as success
+  } else if (f.is(0, 2) && f.src == MASTER && f.payload.size() >= 4) {
+    uint16_t count = f.payload[2] | (f.payload[3] << 8);
+    std::string s;
+    for (uint16_t i = 0; i < count && size_t(4 + 4 * i + 3) < f.payload.size(); i++) {
+      const uint8_t *p = &f.payload[4 + 4 * i];
+      uint32_t a = p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t) p[3] << 24);
+      if (!s.empty()) s += ", ";
+      s += a == MASTER ? std::string("gateway") : hex8(a);
+    }
+    nodes = s.empty() ? "none" : s;
+    nodes_changed = true;
+  }
+}
+
+// call every tick
+inline void loop() {
+  uint32_t el = esphome::millis() - t0;
+  switch (step) {
+    case IDLE:
+      break;
+
+    // --- add ---
+    case A_QUERY_CC:
+      query_connect_code();
+      go(A_WAIT_CC);
+      break;
+    case A_WAIT_CC:
+      if (got_reply) {
+        if (reply_code == 0 || reply_code == UNBOUND_CODE) {
+          // the app would invent a new code and drop all lamps here; don't
+          fail("gateway code is " + hex8(reply_code) + ", fix it in the app first", false);
+          break;
+        }
+        cc = reply_code;
+        tries = 0;
+        set_status("adding " + hex8(target) + ": gateway code " + hex8(cc) + ", opening network");
+        go(A_SET_ZERO);
+      } else if (el > REPLY_MS) {
+        fail("no reply from gateway", false);
+      }
+      break;
+    case A_SET_ZERO:
+      set_connect_code(MASTER, 0);
+      go(A_WAIT_ZERO);
+      break;
+    case A_WAIT_ZERO:
+      if (el > SETTLE_MS) {
+        query_connect_code();
+        go(A_CHECK_ZERO);
+      }
+      break;
+    case A_CHECK_ZERO:
+      if (got_reply && reply_code == 0) {
+        tries = 0;
+        set_status("adding " + hex8(target) + ": writing code to lamp");
+        go(A_SET_CC);
+      } else if (got_reply || el > REPLY_MS) {
+        if (++tries >= TRIES) fail("gateway did not accept code 0", true);
+        else go(A_SET_ZERO);
+      }
+      break;
+    case A_SET_CC:
+      set_connect_code(target, cc);
+      set_connect_code(MASTER, cc);
+      go(A_WAIT_SET_CC);
+      break;
+    case A_WAIT_SET_CC:
+      if (el > SETTLE_MS) {
+        query_connect_code();
+        go(A_CHECK_CC);
+      }
+      break;
+    case A_CHECK_CC:
+      if (got_reply && reply_code == cc) {
+        tries = 0;
+        set_status("adding " + hex8(target) + ": handshake");
+        go(A_HANDSHAKE);
+      } else if (got_reply || el > REPLY_MS) {
+        if (++tries >= TRIES) fail("gateway code not restored", true);
+        else go(A_SET_CC);
+      }
+      break;
+    case A_HANDSHAKE:
+      handshake(target);
+      go(A_WAIT_HANDSHAKE);
+      break;
+    case A_WAIT_HANDSHAKE:
+      if (got_reply) {
+        set_id_address(target, false);
+        set_status("adding " + hex8(target) + ": adding to gateway");
+        go(A_WAIT_ADDED);
+      } else if (el > REPLY_MS) {
+        if (++hs_tries >= TRIES) {
+          fail("lamp does not answer (power it on, close to the gateway)", true);
+        } else {
+          tries = 0;
+          set_status("adding " + hex8(target) + ": no handshake, retry " + std::to_string(hs_tries));
+          go(A_SET_ZERO);  // the app restarts from "open network"
+        }
+      }
+      break;
+    case A_WAIT_ADDED:
+      if (el > REPLY_MS) {
+        enum_slaves();
+        set_status("added " + hex8(target));
+        step = IDLE;
+      }
+      break;
+
+    // --- remove ---
+    case D_HANDSHAKE:
+      handshake(target);
+      go(D_WAIT_HANDSHAKE);
+      break;
+    case D_WAIT_HANDSHAKE:
+      if (got_reply) {
+        set_connect_code(target, UNBOUND_CODE);
+        set_id_address(target, true);
+        go(D_WAIT_DONE);
+      } else if (el > REPLY_MS) {
+        if (++tries >= 2) {
+          // lamp is gone: just drop it from the gateway table
+          set_id_address(target, true);
+          go(D_WAIT_DONE);
+        } else {
+          go(D_HANDSHAKE);
+        }
+      }
+      break;
+    case D_WAIT_DONE:
+      if (el > 1000) {
+        enum_slaves();
+        set_status("removed " + hex8(target) + (tries >= 2 ? " (lamp did not answer, only removed from gateway)" : ""));
+        step = IDLE;
+      }
+      break;
+  }
+}
+
+}  // namespace pairing
 }  // namespace sengled
