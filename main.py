@@ -1,154 +1,382 @@
-import serial
-import re
-import binascii
-from serial.tools.list_ports import comports
+#!/usr/bin/env python3
+"""Sengled Pulse Link (C01-BR30) protocol tool: build, send and sniff frames.
 
-DEFAULT_BAUDRATE = 115200
-DEFAULT_PORT = '/dev/ttyUSB0'
+Arguments are key=value pairs. Run `python3 main.py help` for details.
+"""
+import sys
+import time
 
-class ReadLine:
-    def __init__(self, s):
-        self.buf = bytearray()
-        self.s = s
+HELP = """\
+Usage: python3 main.py [key=value ...]
+       python3 main.py help            show this help
+       python3 main.py help=commands   list commands
 
-    def readline(self):
-        while True:
-            i = max(1, min(2048, self.s.in_waiting))
-            data = self.s.read(i)
-            i = data.find(b"~")
-            if i >= 0:
-                r = self.buf + data[:i]
-                self.buf[0:] = data[i+1:]
-                return r
+Modes (mode=...):
+  sniff   read frames from the serial port and decode them   (default)
+  send    build a command, send it, print and decode replies
+  build   only print the frame as hex, no serial port needed
+  decode  decode a frame given as hex=...
+
+Keys:
+  mode=sniff|send|build|decode
+  port=/dev/ttyUSB0     serial port, or /dev/rfcomm0 for the Bluetooth SPP
+  baud=115200           baud rate (the module UART runs at 115200)
+  cmd=NAME              command for send/build, see help=commands
+  dst=master            target: master (00000000, the gateway itself),
+                        all (FFFFFFFF, broadcast), or a lamp address
+                        as 8 hex digits big-endian, e.g. 00020056
+  value=N               first parameter (decimal or 0x..)
+  value2=N              second parameter (brightness only)
+  timeout=3             seconds to wait for replies in send mode
+  raw=1                 also print the raw hex of every frame
+  hex="7E FE FF ..."    frame for mode=decode
+
+Examples:
+  python3 main.py                                   sniff /dev/ttyUSB0
+  python3 main.py mode=build cmd=lamp_off dst=all
+  python3 main.py mode=send port=/dev/rfcomm0 cmd=volume value=40 dst=all
+  python3 main.py mode=send cmd=lamp_state dst=00020056
+  python3 main.py mode=decode hex="7E FE FF FF FF 00 00 00 00 00 00 01 00 FC 00 7E"
+"""
+
+ADDR_NAMES = {
+    0xFFFFFFFE: "client",     # the phone app / Bluetooth side
+    0xFFFFFFFF: "all",        # broadcast
+    0x00000000: "master",     # the gateway itself
+}
+
+# (subsystem, cmd) -> (name, total frame length, payload builder, description)
+COMMANDS = {
+    (0, 0):  ("generic_info", 16, None, "device info: name (C01-BR30 Link), ids"),
+    (0, 1):  ("handshake",    16, None, "handshake / ping a node, reply 01 = ok"),
+    (0, 2):  ("enum_slaves",  16, None, "list nodes: count (incl. master) and addresses"),
+    (0, 4):  ("set_name",     32, "name", "set node name, value=text up to 13 bytes"),
+    (0, 5):  ("node_name",    16, None, "query node name"),
+    (0, 7):  ("identify",     16, None, "config start: the lamp blinks"),
+    (0, 8):  ("config_end",   16, None, "config end"),
+    (0, 11): ("set_config",   20, {13: "value", 15: "value2"}, "set config item value=item value2=data (item 0 = light memory 0/1)"),
+    (0, 12): ("query_config", 18, {13: "value"}, "query config item value=item"),
+    (1, 0):  ("lamp_onoff",   20, {15: "value"}, "lamp on/off: value=0 on, 1 off"),
+    (1, 1):  ("brightness",   20, {15: "value", 16: "value2"}, "brightness 0..100; value=group value2=own, 255 = keep (app: all -> value=N value2=255, node -> value=255 value2=N, then all 255/100 = apply)"),
+    (1, 3):  ("lamp_state",   18, None, "query lamp on/off and brightness"),
+    (2, 0):  ("channel",      19, {15: "value"}, "sound channel: 0 right, 1 left, 2 left+right"),
+    (2, 1):  ("eq",           19, {15: "value"}, "equalizer: 0 normal 1 pop 2 jazz 3 classic 4 rock 5 movie"),
+    (2, 2):  ("mute",         19, {15: "value"}, "sound: value=1 mute, 0 unmute"),
+    (2, 3):  ("volume",       20, {15: "value", 16: 0xFF}, "volume 0..100"),
+    (2, 4):  ("speaker_state", 18, None, "query channel, eq, mute, volume"),
+    (4, 0):  ("connect_code", 16, None, "query network code (= gateway SN)"),
+    (4, 1):  ("set_connect_code", 20, "code", "write network code to a lamp, value=code (0x00FFFFFF unbinds)"),
+    (4, 2):  ("set_id_address", 24, "idaddr", "gateway node table: value=lamp address (hex), value2=0 add, 1 delete"),
+    (4, 6):  ("audio_source", 19, {15: "value"}, "audio source: 0 3.5mm, 1 bluetooth"),
+    (4, 7):  ("get_audio_source", 16, None, "query audio source"),
+}
+BY_NAME = {v[0]: k for k, v in COMMANDS.items()}
+# aliases for convenience
+ALIASES = {"lamp_on": ("lamp_onoff", 0), "lamp_off": ("lamp_onoff", 1),
+           "unmute": ("mute", 0), "sound_off": ("mute", 1), "sound_on": ("mute", 0)}
+
+CHANNELS = {0: "right", 1: "left", 2: "left+right"}
+EQS = {0: "normal", 1: "pop", 2: "jazz", 3: "classic", 4: "rock", 5: "movie"}
+SOURCES = {0: "3.5mm", 1: "bluetooth"}
+
+
+def die(msg):
+    print(f"error: {msg}\n", file=sys.stderr)
+    print(HELP, file=sys.stderr)
+    sys.exit(2)
+
+
+def parse_args(argv):
+    opts = {}
+    for arg in argv:
+        if arg in ("help", "-h", "--help"):
+            opts["help"] = ""
+            continue
+        if "=" not in arg:
+            die(f"argument '{arg}' is not key=value")
+        k, v = arg.split("=", 1)
+        opts[k.strip().lower()] = v.strip()
+    known = {"help", "mode", "port", "baud", "cmd", "dst", "value", "value2",
+             "timeout", "raw", "hex"}
+    unknown = set(opts) - known
+    if unknown:
+        die("unknown key(s): " + ", ".join(sorted(unknown)))
+    return opts
+
+
+def num(s, what):
+    try:
+        return int(s, 0)
+    except (TypeError, ValueError):
+        die(f"{what}={s!r} is not a number")
+
+
+def parse_addr(s):
+    s = (s or "master").lower()
+    if s == "master":
+        return 0
+    if s in ("all", "broadcast"):
+        return 0xFFFFFFFF
+    if s.startswith("0x"):
+        s = s[2:]
+    try:
+        return int(s, 16) & 0xFFFFFFFF
+    except ValueError:
+        die(f"dst={s!r}: use master, all or 8 hex digits like 00020056")
+
+
+def fmt_addr(a):
+    return ADDR_NAMES.get(a, f"{a:08X}")
+
+
+def checksum(frame):
+    return sum(frame[1:len(frame) - 3]) & 0xFF
+
+
+def escape(frame):
+    out = bytearray([0x7E])
+    for x in frame[1:-1]:
+        out += bytes([0x7D, x ^ 0x20]) if x in (0x7D, 0x7E) else bytes([x])
+    out.append(0x7E)
+    return bytes(out)
+
+
+def unescape(body):
+    out, esc = bytearray(), False
+    for x in body:
+        if esc:
+            out.append(x ^ 0x20)
+            esc = False
+        elif x == 0x7D:
+            esc = True
+        else:
+            out.append(x)
+    return bytes(out)
+
+
+def build(name, dst, value=None, value2=None):
+    fixed = None
+    if name in ALIASES:
+        name, fixed = ALIASES[name]
+    if name not in BY_NAME:
+        die(f"unknown cmd '{name}', see help=commands")
+    key = BY_NAME[name]
+    _, length, payload, _ = COMMANDS[key]
+    if fixed is not None:
+        value = str(fixed)
+    f = bytearray(length)
+    f[0] = f[-1] = 0x7E
+    f[1:5] = (0xFFFFFFFE).to_bytes(4, "little")
+    f[5:9] = dst.to_bytes(4, "little")
+    f[9], f[11] = key
+    vals = {"value": value, "value2": value2}
+    if isinstance(payload, dict):
+        for off, src in payload.items():
+            if isinstance(src, int):
+                f[off] = src
             else:
-                self.buf.extend(data)
+                v = vals[src]
+                if v is None and src == "value2" and name == "brightness":
+                    v = "255"
+                if v is None:
+                    die(f"cmd={name} needs {src}=")
+                f[off] = num(v, src) & 0xFF
+    elif payload == "name":
+        if value is None:
+            die("cmd=set_name needs value=<name>")
+        b = value.encode()[:13]
+        f[13:13 + len(b)] = b
+    elif payload == "code":
+        if value is None:
+            die("cmd=set_connect_code needs value=<code>")
+        f[13:17] = (num(value, "value") & 0xFFFFFFFF).to_bytes(4, "little")
+    elif payload == "idaddr":
+        if value is None:
+            die("cmd=set_id_address needs value=<lamp address hex>")
+        f[13] = num(value2 or "0", "value2") & 0xFF
+        f[17:21] = parse_addr(value).to_bytes(4, "little")
+    f[length - 3] = checksum(f)
+    return escape(f)
 
-ser = serial.Serial(DEFAULT_PORT, DEFAULT_BAUDRATE)
-rl = ReadLine(ser)
 
-naming = {
-    "feffffff": "bluetooth",
-    "ffffffff": "gateway",
-    "00000000": "memory",
-    "b6fe0100": "AD:0001FEB6",
-    "56000200": "AD:00020056",
-    "0d0a5353": "service1",
-    "3d30300d": "service2",
-    "c06c0900": "gw sn"
-}
+def decode(frame):
+    """frame: unescaped bytes starting and ending with 0x7E."""
+    if len(frame) < 15:
+        return f"short frame: {frame.hex(' ')}"
+    src = int.from_bytes(frame[1:5], "little")
+    dst = int.from_bytes(frame[5:9], "little")
+    key = (frame[9], frame[11])
+    n = len(frame)
+    ok = checksum(frame) == frame[n - 3]
+    p = frame[13:n - 3]  # payload, without checksum / 00 7E
+    name = COMMANDS.get(key, (f"unknown {key[0]}/{key[1]}",))[0]
+    reply = dst == 0xFFFFFFFE
+    head = f"{fmt_addr(src):>8} -> {fmt_addr(dst):<8} {name:<16}"
+    info = describe(key, p, reply)
+    return f"{head} {info}{'' if ok else '  [BAD CHECKSUM]'}"
 
-processnames = {
-    "00000000": "bluetooth params ?",
-    "00000100": "manager lamps",
-    "00000200": "get saved data",
-    "00000b00": "set light memory",
-    "00000c00": "get light memory",
-    "01000000": "set light on/off",
-    "01000100": "change light",
-    "01000300": "get light",
-    "02000000": "change l/l+r/r volume",
-    "02000100": "set EQ",
-    "02000200": "set volume on/off",
-    "02000300": "change cpu volume",
-    "02000400": "get volume",
-    "04000000": "get gateway serial",
-    "04000100": "pair mode?",
-    "04000200": "NONE",
-    "04000600": "set source",
-    "04000700": "get source",
-}
 
-eqlist = {
-    "fa": "normal",
-    "fb": "pop",
-    "fc": "jazz",
-    "fd": "classic",
-    "fe": "rock",
-    "ff": "movie"
-}
+def describe(key, p, reply):
+    g = lambda i: p[i] if i < len(p) else None
+    try:
+        if key == (1, 0):
+            return "on" if g(2) == 0 else "off"
+        if key == (1, 1):
+            a, b = g(2), g(3)
+            if a == 255 and b == 100:
+                return "apply"
+            return f"group={a if a != 255 else '-'} own={b if b != 255 else '-'}"
+        if key == (1, 3) and reply:
+            return f"{'on' if g(2) == 0 else 'off'} brightness={g(3)}%"
+        if key == (2, 0):
+            return CHANNELS.get(g(2), g(2))
+        if key == (2, 1):
+            return EQS.get(g(2), g(2))
+        if key == (2, 2):
+            return "mute" if g(2) == 1 else "unmute"
+        if key == (2, 3):
+            return f"volume={g(2)}%"
+        if key == (2, 4) and reply:
+            return (f"channel={CHANNELS.get(g(2), g(2))} eq={EQS.get(g(3), g(3))} "
+                    f"{'mute' if g(4) else 'unmute'} volume={g(5)}%")
+        if key == (4, 6):
+            return SOURCES.get(g(2), g(2))
+        if key == (4, 7) and reply:
+            return SOURCES.get(g(0), g(0))
+        if key == (4, 0) and reply:
+            return f"code={int.from_bytes(p[0:4], 'little'):08X}"
+        if key == (4, 1):
+            return f"code={int.from_bytes(p[0:4], 'little'):08X}"
+        if key == (4, 2):
+            op = "add" if g(0) == 0 else "delete"
+            return f"{op} {int.from_bytes(p[4:8], 'little'):08X}"
+        if key == (0, 1) and reply:
+            return "ok" if g(0) == 1 else f"result={g(0)}"
+        if key == (0, 2) and reply:
+            count = int.from_bytes(p[2:4], "little")
+            addrs = [int.from_bytes(p[4 + 4 * i:8 + 4 * i], "little") for i in range(count)]
+            return f"nodes={count}: " + ", ".join(fmt_addr(a) for a in addrs)
+        if key == (0, 0) and reply:
+            return "name=" + p[:32].split(b"\0")[0].decode(errors="replace")
+        if key == (0, 4):
+            return "name=" + p[:13].split(b"\0")[0].decode(errors="replace")
+        if key == (0, 11):
+            return f"item={g(0)} value={g(2)}"
+        if key == (0, 12):
+            return f"item={g(0)}" + (f" value={g(2)}" if reply else "")
+    except Exception:
+        pass
+    return p.hex(" ") if p else ""
 
-while True:
-    message = binascii.hexlify(rl.readline()).decode('utf-8')
-    startremoved = re.sub(r"^7e", "", message)
-    cleared = re.sub(r"00$", "", startremoved)
-    if cleared:
-        sender = cleared[0:8]
-        reciever = cleared[8:16]
-        process = cleared[16:24]
-        message = re.sub(r"007e$", "", cleared[24:])
-        original = cleared[24:]
+
+class FrameReader:
+    """Split a byte stream into 7E...7E frames; other bytes are text."""
+
+    def __init__(self, ser):
+        self.ser = ser
+        self.buf = bytearray()
+
+    def read(self, timeout=None):
+        end = None if timeout is None else time.monotonic() + timeout
+        while True:
+            start = self.buf.find(b"\x7e")
+            if start > 0:
+                text, self.buf = bytes(self.buf[:start]), self.buf[start:]
+                return "text", text
+            if start == 0:
+                stop = self.buf.find(b"\x7e", 1)
+                if stop == 1:          # 7E 7E: previous frame end + new start
+                    del self.buf[0]
+                    continue
+                if stop > 1:
+                    body, self.buf = bytes(self.buf[1:stop]), self.buf[stop + 1:]
+                    return "frame", b"\x7e" + unescape(body) + b"\x7e"
+            if end is not None and time.monotonic() >= end:
+                return None, None
+            data = self.ser.read(max(1, self.ser.in_waiting))
+            self.buf += data
+
+
+def print_item(kind, data, raw):
+    if kind == "text":
+        t = data.decode(errors="replace").strip()
+        if t:
+            print(f"   text: {t}")
+    elif kind == "frame":
+        print(decode(data))
+        if raw:
+            print("         " + data.hex(" ").upper())
+
+
+def open_port(opts):
+    try:
+        import serial
+    except ImportError:
+        die("pyserial is required: pip install pyserial")
+    return serial.Serial(opts.get("port", "/dev/ttyUSB0"),
+                         num(opts.get("baud", "115200"), "baud"), timeout=0.2)
+
+
+def print_commands():
+    print("Commands (cmd=...):")
+    for key, (name, _, _, desc) in sorted(COMMANDS.items()):
+        print(f"  {name:<18} {key[0]}/{key[1]:<3} {desc}")
+    print("Aliases: " + ", ".join(f"{a} = {n} value={v}" for a, (n, v) in ALIASES.items()))
+
+
+def main():
+    opts = parse_args(sys.argv[1:])
+    if "help" in opts:
+        if opts["help"] == "commands":
+            print_commands()
+        else:
+            print(HELP)
+        return
+    mode = opts.get("mode", "sniff")
+    raw = opts.get("raw", "0") not in ("0", "", "no", "false")
+
+    if mode in ("build", "send"):
+        if "cmd" not in opts:
+            die(f"mode={mode} needs cmd=")
+        pkt = build(opts["cmd"], parse_addr(opts.get("dst")),
+                    opts.get("value"), opts.get("value2"))
+        print(pkt.hex(" ").upper())
+        if mode == "build":
+            return
+        ser = open_port(opts)
+        ser.write(pkt)
+        ser.flush()
+        rd = FrameReader(ser)
+        deadline = time.monotonic() + float(opts.get("timeout", "3"))
+        got = False
+        while (left := deadline - time.monotonic()) > 0:
+            kind, data = rd.read(left)
+            if kind is None:
+                break
+            got = True
+            print_item(kind, data, raw)
+        if not got:
+            print("no reply", file=sys.stderr)
+    elif mode == "decode":
+        if "hex" not in opts:
+            die("mode=decode needs hex=")
         try:
-            prefix = str(message[:4])
-            part_1 = message[4:6]
-            part_2 = message[6:8]
-            part_3 = message[8:10]
-            if process == '01000100' and reciever == 'ffffffff': #change light
-                if part_2 != '64':
-                    message = 'light: ' + str(int(part_1, 16)) + '% '
-                else:
-                    message = 'apply change'
-            elif process == '01000100':
-                message = 'light: ' + str(int(part_2, 16)) + '% '
-
-            if process == '01000000' and reciever == 'ffffffff': #set light on/off
-                if part_3 == 'f8':
-                    message = 'light on'
-                else:
-                    message = 'light off'
-
-            if process == '01000000' and not reciever == 'ffffffff':  # set light on/off
-                if part_1 == '00':
-                    message = 'light on'
-                else:
-                    message = 'light off'
-
-            if process == '02000100':
-                message = eqlist[part_2]
-
-            if process == '02000000':
-                if part_1 == '00':
-                    message = 'right'
-                elif part_1 == '01':
-                    message = 'left'
-                else:
-                    message = 'left+right'
-
-            if process == '02000200':
-                if part_1 == '01':
-                    message = 'volume off'
-                else:
-                    message = 'volume on'
-
-            if process == '04000600':
-                if part_1 == '00':
-                    message = '3.5mm'
-                else:
-                    message = 'bluetooth'
-
-            if process == '02000300':
-                if part_2 == 'ff':
-                    message = "volume: " + str(int(part_1, 16)) + ' %'
-
-            if process == '00000b00':
-                if part_1 == '00':
-                    message = 'light saved memory disabled'
-                else:
-                    message = 'light memory enabled'
-
-            if process == '00000200':
-                bulb_count = message[1:8]
-                separator = message[8:16]
-                bulbs_sn = message[16:80] # because in docs max 8 lamps , 8*8=64 + 16
-                spacedata = message[80:128]
-                bulbs = [bulbs_sn[i:i+8] for i in range(0, len(bulbs_sn), 8)]
-                bulb_c = str(int(bulb_count[4:5]) - 1)
-                message = 'Total bulbs: ' + bulb_c + '; '
-                for bulb in bulbs:
-                    if bulb != '00000000':
-                        message = message + 'bulb id: ' + bulb + '; '
+            b = bytes.fromhex(opts["hex"].replace("|", " "))
+        except ValueError:
+            die("hex= is not valid hex")
+        if b[:1] != b"\x7e" or b[-1:] != b"\x7e":
+            die("frame must start and end with 7E")
+        print(decode(b"\x7e" + unescape(b[1:-1]) + b"\x7e"))
+    elif mode == "sniff":
+        rd = FrameReader(open_port(opts))
+        try:
+            while True:
+                print_item(*rd.read(), raw)
+        except KeyboardInterrupt:
+            pass
+    else:
+        die(f"unknown mode '{mode}'")
 
 
-            print(f"{naming[sender]} to {naming[reciever]} \t\t| process: {processnames[process]} \t\t| message: {message}")
-            #print(f"from: {naming[sender]} | to: {naming[reciever]} | process: {processnames[process]} | message: {original}\n")
-        except:
-            print(f"{sender} | {reciever} | {process} | {message}")
+if __name__ == "__main__":
+    main()
