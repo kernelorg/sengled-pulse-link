@@ -1,0 +1,209 @@
+# ESPHome node that talks to the Sengled Pulse Link (C01-BR30) gateway CPU
+# over its internal UART (the link between the CPU and the EH-MB05 module).
+# Protocol: see ../README.md. Helpers: sengled_pulse.h (same directory).
+
+substitutions:
+  name: sengled-pulse
+  friendly_name: Sengled Pulse
+  # lamp addresses from `enum_slaves` (python3 main.py mode=send cmd=enum_slaves)
+  lamp1_addr: "0x00020056"
+  lamp2_addr: "0x0001FEB6"
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  includes:
+    - sengled_pulse.h
+  on_boot:
+    priority: -100
+    then:
+      - lambda: |-
+          sengled::handshake(sengled::MASTER);
+          sengled::speaker_state(sengled::MASTER);
+          sengled::lamp_state(sengled::MASTER);
+          sengled::get_audio_source();
+          sengled::query_config(0);
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+logger:
+
+api:
+  encryption:
+    key: !secret api_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+uart:
+  id: pulse_uart
+  tx_pin: GPIO17   # -> gateway CPU RX (net of EH-MB05 pin 38 UART_TX)
+  rx_pin: GPIO16   # <- gateway CPU TX (net of EH-MB05 pin 39 UART_RX)
+  baud_rate: 115200
+
+interval:
+  # TX queue + RX parser; publishes state from the gateway's replies
+  - interval: 20ms
+    then:
+      - lambda: |-
+          sengled::Frame f;
+          while (sengled::poll(id(pulse_uart), f)) {
+            if (f.dst != sengled::CLIENT) continue;
+            if (f.is(2, 4) && f.src == sengled::MASTER) {        // speaker_state
+              auto ch = id(channel_sel).at(f.at(2));
+              if (ch.has_value()) id(channel_sel).publish_state(*ch);
+              auto e = id(eq_sel).at(f.at(3));
+              if (e.has_value()) id(eq_sel).publish_state(*e);
+              id(mute_sw).publish_state(f.at(4) != 0);
+              id(volume_num).publish_state(f.at(5));
+            } else if (f.is(1, 3) && f.src == sengled::MASTER) { // lamp_state
+              id(light_on).publish_state(f.at(2) == 0);
+              id(light_level).publish_state(f.at(3));
+            } else if (f.is(4, 7)) {                             // audio source
+              auto s = id(source_sel).at(f.at(0));
+              if (s.has_value()) id(source_sel).publish_state(*s);
+            } else if (f.is(0, 12) && f.at(0) == 0) {            // light memory
+              id(memory_sw).publish_state(f.at(2) != 0);
+            }
+          }
+  # refresh state (also picks up changes made from the phone app)
+  - interval: 30s
+    then:
+      - lambda: |-
+          sengled::speaker_state(sengled::MASTER);
+          sengled::lamp_state(sengled::MASTER);
+          sengled::get_audio_source();
+
+output:
+  - platform: template
+    id: all_lamps_out
+    type: float
+    write_action:
+      - lambda: sengled::all_lamps(state);
+  - platform: template
+    id: lamp1_out
+    type: float
+    write_action:
+      - lambda: sengled::one_lamp(${lamp1_addr}, state);
+  - platform: template
+    id: lamp2_out
+    type: float
+    write_action:
+      - lambda: sengled::one_lamp(${lamp2_addr}, state);
+
+light:
+  # transitions would flood the UART with brightness frames
+  - platform: monochromatic
+    name: All lamps
+    output: all_lamps_out
+    gamma_correct: 1.0
+    default_transition_length: 0s
+  - platform: monochromatic
+    name: Lamp 1
+    output: lamp1_out
+    gamma_correct: 1.0
+    default_transition_length: 0s
+  - platform: monochromatic
+    name: Lamp 2
+    output: lamp2_out
+    gamma_correct: 1.0
+    default_transition_length: 0s
+
+number:
+  - platform: template
+    id: volume_num
+    name: Volume
+    icon: mdi:volume-high
+    min_value: 0
+    max_value: 100
+    step: 1
+    unit_of_measurement: "%"
+    optimistic: true
+    set_action:
+      - lambda: |-
+          sengled::volume(sengled::ALL, (uint8_t) x);
+          sengled::mute(sengled::ALL, false);   // the app unmutes after a volume change
+          id(mute_sw).publish_state(false);
+
+switch:
+  - platform: template
+    id: mute_sw
+    name: Mute
+    icon: mdi:volume-off
+    optimistic: true
+    turn_on_action:
+      - lambda: sengled::mute(sengled::ALL, true);
+    turn_off_action:
+      - lambda: sengled::mute(sengled::ALL, false);
+  - platform: template
+    id: memory_sw
+    name: Light memory
+    entity_category: config
+    optimistic: true
+    turn_on_action:
+      - lambda: sengled::set_config(sengled::ALL, 0, 1);
+    turn_off_action:
+      - lambda: sengled::set_config(sengled::ALL, 0, 0);
+
+select:
+  # option order = protocol value
+  - platform: template
+    id: eq_sel
+    name: Equalizer
+    options: [normal, pop, jazz, classic, rock, movie]
+    optimistic: true
+    set_action:
+      - lambda: |-
+          auto i = id(eq_sel).index_of(x);
+          if (i.has_value()) sengled::eq(sengled::ALL, *i);
+  - platform: template
+    id: channel_sel
+    name: Channel
+    options: [right, left, left+right]
+    optimistic: true
+    set_action:
+      - lambda: |-
+          auto i = id(channel_sel).index_of(x);
+          if (i.has_value()) sengled::channel(sengled::ALL, *i);
+  - platform: template
+    id: source_sel
+    name: Audio source
+    options: [3.5mm, bluetooth]
+    optimistic: true
+    set_action:
+      - lambda: |-
+          auto i = id(source_sel).index_of(x);
+          if (i.has_value()) sengled::audio_source(*i);
+
+button:
+  - platform: template
+    name: Identify lamp 1
+    entity_category: diagnostic
+    on_press:
+      - lambda: sengled::identify(${lamp1_addr});
+  - platform: template
+    name: Identify lamp 2
+    entity_category: diagnostic
+    on_press:
+      - lambda: sengled::identify(${lamp2_addr});
+
+sensor:
+  - platform: template
+    id: light_level
+    name: Gateway lamp brightness
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    update_interval: never
+
+binary_sensor:
+  - platform: template
+    id: light_on
+    name: Gateway lamp on

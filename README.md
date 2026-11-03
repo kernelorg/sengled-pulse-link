@@ -57,6 +57,42 @@ sudo rfcomm bind 0 <MAC> <channel>
 python3 main.py mode=send port=/dev/rfcomm0 cmd=handshake
 ```
 
+## ESPHome
+
+`esphome/` contains an ESPHome node that connects an ESP32 to the gateway's
+internal UART and exposes it to Home Assistant:
+
+- lights: all lamps, and single lamps by address (`lamp1_addr`, `lamp2_addr`
+  in `substitutions`; get the addresses with `cmd=enum_slaves`);
+- volume, mute, equalizer, channel, audio source, light memory;
+- "identify" buttons (the lamp blinks), lamp on/brightness sensors.
+
+State is read back from the gateway at boot and every 30 s, so changes made
+from the phone app show up too. The light entities are optimistic.
+
+| ESP32 | gateway |
+|---|---|
+| GPIO16 (RX) | CPU TX line → EH-MB05 pin 39 (UART_RX) |
+| GPIO17 (TX) | CPU RX line ← EH-MB05 pin 38 (UART_TX) |
+| GND | GND |
+
+The CPU RX line is already driven by the module's TX, so do not connect the
+ESP TX to it directly. Either cut the trace from pin 38 (the phone app stops
+working), or join both transmitters with a diode wired-AND: cut the trace,
+connect pin 38 and GPIO17 each through a Schottky diode (cathode towards the
+transmitter) to the CPU RX line, with a 4.7–10 kΩ pull-up to 3.3 V.
+
+> **Warning:** the C01-BR30 is a BR30 bulb with a mains power supply inside,
+> most likely non-isolated. Do not touch the board while it is plugged in, and
+> do not connect the ESP to a PC over USB while the bulb is on mains. Power the
+> ESP32 from a separate isolated supply.
+
+```
+cd esphome
+# create secrets.yaml with api_key, ota_password, wifi_ssid, wifi_password
+esphome run sengled-pulse.yaml
+```
+
 ## Frame format
 
 ```

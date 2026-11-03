@@ -58,6 +58,46 @@ sudo rfcomm bind 0 <MAC> <kanał>
 python3 main.py mode=send port=/dev/rfcomm0 cmd=handshake
 ```
 
+## ESPHome
+
+W `esphome/` znajduje się węzeł ESPHome: ESP32 podłącza się do wewnętrznego
+UART bramki i udostępnia sterowanie w Home Assistant:
+
+- światło: wszystkie żarówki naraz oraz pojedyncze żarówki według adresu
+  (`lamp1_addr`, `lamp2_addr` w `substitutions`; adresy można odczytać przez
+  `cmd=enum_slaves`);
+- głośność, wyciszenie, korektor, kanał, źródło dźwięku, pamięć światła;
+- przyciski „identify” (żarówka miga), czujniki włączenia i jasności żarówki.
+
+Stan jest odczytywany z bramki przy starcie i co 30 sekund, więc zmiany
+wprowadzone z telefonu też się pojawiają. Encje światła działają w trybie
+optymistycznym.
+
+| ESP32 | bramka |
+|---|---|
+| GPIO16 (RX) | linia CPU TX → wyprowadzenie 39 EH-MB05 (UART_RX) |
+| GPIO17 (TX) | linia CPU RX ← wyprowadzenie 38 EH-MB05 (UART_TX) |
+| GND | GND |
+
+Linię CPU RX steruje już TX modułu, więc TX ESP nie wolno podłączać do niej
+bezpośrednio. Można albo przeciąć ścieżkę od wyprowadzenia 38 (aplikacja na
+telefonie przestanie działać), albo połączyć oba nadajniki diodowym AND:
+przeciąć ścieżkę, podłączyć wyprowadzenie 38 i GPIO17 do linii CPU RX, każde
+przez własną diodę Schottky'ego (katodą do nadajnika), plus rezystor
+podciągający 4,7–10 kΩ do 3,3 V.
+
+> **Uwaga:** C01-BR30 to żarówka BR30 z sieciowym zasilaczem w środku,
+> najprawdopodobniej bez izolacji galwanicznej. Nie dotykaj płytki, gdy
+> żarówka jest podłączona do sieci, i nie podłączaj ESP do komputera przez USB,
+> gdy żarówka jest zasilana z sieci. ESP32 zasilaj z osobnego izolowanego
+> źródła.
+
+```
+cd esphome
+# utwórz secrets.yaml: api_key, ota_password, wifi_ssid, wifi_password
+esphome run sengled-pulse.yaml
+```
+
 ## Format ramki
 
 ```
