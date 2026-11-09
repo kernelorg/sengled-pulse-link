@@ -78,23 +78,41 @@ python3 main.py mode=send port=/dev/rfcomm0 cmd=handshake
 
 ## ESPHome
 
-`esphome/` contains an ESPHome node that connects an ESP32 to the gateway's
-internal UART and exposes it to Home Assistant:
+`components/sengled_pulse` is an ESPHome external component: an ESP32
+connected to the gateway's internal UART exposes it to Home Assistant. One
+block in the config creates every entity, there are no lambdas to copy:
 
-- lights: *All lamps* and lamp slots *Lamp 1*, *Lamp 2*, … (8 in the
-  example, the gateway supports up to 8 lamps); each slot
-  also has its own *volume*, *mute* and *channel*; on/off, brightness and sound
-  are read back from the lamp;
-- *Volume*, *Mute*, *Equalizer*, *Channel*, light memory: all lamps;
+```yaml
+external_components:
+  - source: github://kernelorg/sengled-pulse-link
+    components: [sengled_pulse]
+
+uart:
+  id: pulse_uart
+  tx_pin: GPIO17
+  rx_pin: GPIO16
+  baud_rate: 115200
+
+sengled_pulse:
+  uart_id: pulse_uart
+  lamp_slots: 2          # how many lamps to show, 1..8
+  auto_mute:             # optional
+    media_player: speaker_player
+    delay: 3s
+```
+
+A full example is `esphome/sengled-pulse.yaml`. Entities:
+
+- lights: *All lamps* and lamp slots *Lamp 1*, *Lamp 2*, …; each slot also
+  has its own *volume*, *mute*, *channel*, *address* and an *identify* button
+  (the lamp blinks); on/off, brightness and sound are read back from the lamp;
+- *Volume*, *Mute*, *Equalizer*, *Channel*, *Light memory*: all lamps;
 - *Gateway mute*, *Gateway equalizer*, *Gateway channel*: the gateway's own
-  speaker output, separately from the lamps (its volume can not be set);
-  *Audio source*;
-- `sengled::auto_mute()` / `auto_unmute()` mute all lamps and the gateway,
-  e.g. while a media player on the ESP plays nothing; speakers muted by hand
-  stay muted;
+  speaker output, separately from the lamps (its volume can not be set: the
+  gateway stores the value but ignores it, the phone app does not set it
+  either); *Audio source*;
 - *Gateway type*: gateway name and productID from `generic_info`, e.g.
   `C01-BR30 Link (productID 2, audio box, no lamp)`;
-- "identify" buttons (the lamp blinks);
 - adding and removing lamps: enter the lamp address (`00020056`, or the QR
   text `...;AD:00020056`) into *Lamp address* and press *Add lamp* /
   *Remove lamp*. The procedure is the same as in the app and takes about
@@ -102,46 +120,39 @@ internal UART and exposes it to Home Assistant:
   *Gateway nodes*. If anything fails while adding, the gateway network code
   is restored.
 
+Every entity key (`all_lamps`, `volume`, `gateway_mute`, `audio_source`, …)
+takes the usual entity options to rename or hide it; per-slot overrides go
+under `slots:`, e.g. `slots: [{light: {name: Kitchen}}]`. The option labels
+of a select can be renamed with `options:` (the order is the protocol value).
+
+`auto_mute` mutes all lamps and the gateway while the given media player plays
+nothing for `delay`, and unmutes them when it plays again; speakers muted by
+hand stay muted. From a lambda: `id(pulse).auto_mute()` /
+`id(pulse).auto_unmute()`.
+
+Feedback:
+
+- state is read back from the gateway and the lamps at boot and every 30 s, so
+  changes made from the phone app show up too;
+- a change to all lamps (light, volume, mute, channel, equalizer) is shown in
+  every lamp slot at once and confirmed by the next read-back;
+- *All lamps* shows the lamps' combined state like a Home Assistant light
+  group (on when any lamp is on, mean brightness of the lamps that are on);
+  *Volume* shows the mean volume, *Mute* is on when all lamps are muted,
+  *Channel* / *Equalizer* show the lamps' common value.
+
 Lamp slots are bound to lamps at run time, there are no addresses in the
 config and no reflashing when lamps change:
 
 - after boot the slots are filled from the gateway's node list;
 - a lamp added with *Add lamp* takes the first free slot, a removed lamp frees
-  its slot;
+  its slot; a lamp without a free slot is logged, raise `lamp_slots`;
 - the binding is stored in flash, so a lamp keeps its slot across reboots;
-- *Lamp N address* shows which lamp is in a slot (`empty` if none). Rename the
-  entities in Home Assistant as you like and hide unused slots.
+- *Lamp N address* shows which lamp is in a slot (`empty` if none).
 
 A freed slot is reused by the next new lamp, so after removing a lamp check
-the names you gave to that slot.
-
-### Number of lamp slots
-
-Each slot is one `lamp_slot.yaml` package. You need at least as many slots as
-lamps paired to the gateway (at most 8); a lamp without a free slot is logged
-as `no free slot`. To change the number, edit two places in
-`sengled-pulse.yaml`:
-
-1. `substitutions` → `lamp_slots`: the number of slots, e.g. `"3"`;
-2. `packages`: one line per slot, numbered from 1, with `slot` = number − 1:
-
-   ```yaml
-   packages:
-     lamp1: !include { file: lamp_slot.yaml, vars: { slot: 0, n: 1 } }
-     lamp2: !include { file: lamp_slot.yaml, vars: { slot: 1, n: 2 } }
-     lamp3: !include { file: lamp_slot.yaml, vars: { slot: 2, n: 3 } }
-   ```
-
-Then install the firmware. The slots are filled again from the gateway's node
-list after the update. Removed slots disappear from Home Assistant; delete
-their leftover entities there if they stay as "unavailable".
-
-To add a lamp: power it on near the gateway, put its address (or the QR text)
-into *Lamp address*, press *Add lamp*, wait until *Pairing status* says
-`added`.
-
-State is read back from the gateway at boot and every 30 s, so changes made
-from the phone app show up too. The light entities are optimistic.
+the names you gave to that slot. After lowering `lamp_slots`, delete the
+leftover entities in Home Assistant if they stay as "unavailable".
 
 | ESP32 | gateway |
 |---|---|

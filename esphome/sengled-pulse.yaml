@@ -1,6 +1,6 @@
 # ESPHome node that talks to the Sengled Pulse Link (C01-BR30) gateway CPU
 # over its internal UART (the link between the CPU and the EH-MB05 module).
-# Protocol: see ../README.md. Helpers: sengled_pulse.h (same directory).
+# Protocol: see ../README.md. Component: ../components/sengled_pulse.
 #
 # Lamp address (AD)
 # -----------------
@@ -15,83 +15,31 @@
 # -----
 # Each lamp slot ("Lamp 1", "Lamp 2", ...) is bound to a lamp address at run
 # time from the gateway's node list: no addresses in this file, no reflashing
-# when lamps change.
-#   - already paired lamps fill the slots right after boot;
-#   - a lamp added with "Add lamp" takes the first free slot;
-#   - a removed lamp frees its slot;
-#   - the binding is kept in flash, so a lamp keeps its slot after reboots.
-# "Lamp N address" shows which lamp is in a slot ("empty" if none). Rename the
-# entities in Home Assistant as you like.
-#
-# Lamp slots: how many lamps this node shows
-# -------------------------------------------
-# Every lamp slot is one lamp_slot.yaml package ("Lamp N", its volume, mute,
-# channel, address and identify button). Lamps are bound to slots at run time,
-# so the number of slots only has to be >= the number of paired lamps
-# (the gateway takes up to 8). To change it, edit two places:
-#   1. substitutions -> lamp_slots: the number of slots, e.g. "3";
-#   2. packages -> one line per slot, numbered from 1, with slot = N - 1:
-#        lamp3: !include { file: lamp_slot.yaml, vars: { slot: 2, n: 3 } }
-#      (removing slots: delete the last lines, then lower lamp_slots).
-# Then install. The slot table is re-read from the gateway after the update.
-# A lamp that finds no free slot is logged as "no free slot".
+# when lamps change. lamp_slots only has to be >= the number of paired lamps
+# (the gateway takes up to 8); a lamp that finds no free slot is logged.
+# "Lamp N address" shows which lamp is in a slot ("empty" if none).
 #
 # Gateway sound: "Gateway mute/equalizer/channel" act on the gateway's own
 # speaker output (its volume can not be set: the gateway ignores it);
 # "Volume", "Mute", "Equalizer", "Channel" act on all lamps.
-# The gateway itself (Pulse Link, C01-BR30 Link) is an audio box without a
-# lamp ("Gateway type" says "audio box"), so it has no light entity.
 #
 # Adding a lamp: power it on near the gateway, put its address (or the whole
 # QR text) into "Lamp address", press "Add lamp", wait about 20 s until
-# "Pairing status" says "added".
-# Removing: address into "Lamp address", press "Remove lamp".
+# "Pairing status" says "added". Removing: address, then "Remove lamp".
 
 substitutions:
-  # number of lamp slots, 1..8: must match the lampN lines under packages
-  lamp_slots: "8"
   name: sengled-pulse
   friendly_name: Sengled Pulse
 
 esphome:
   name: ${name}
   friendly_name: ${friendly_name}
-  includes:
-    - sengled_pulse.h
-  on_boot:
-    priority: -100
-    then:
-      - lambda: |-
-          sengled::slots::bind(id(lamp_slots).data(), id(lamp_slots).size());
-          sengled::handshake(sengled::MASTER);
-          sengled::generic_info();
-          sengled::enum_slaves();
-          sengled::speaker_state(sengled::MASTER);
-          sengled::get_audio_source();
-          sengled::query_config(0);
-      # let the lights restore their state without sending anything
-      - delay: 5s
-      - lambda: |-
-          sengled::ready = true;
-          sengled::poll_slots();   // slots are filled by now
 
-globals:
-  # lamp address per slot, 0 = empty (see "Lamps" above)
-  - id: lamp_slots
-    type: std::array<uint32_t, ${lamp_slots}>
-    restore_value: true
-    initial_value: "std::array<uint32_t, ${lamp_slots}>{}"
-
-packages:
-  # one line per lamp slot: lampN with slot: N-1, n: N (see "Lamp slots" above)
-  lamp1: !include { file: lamp_slot.yaml, vars: { slot: 0, n: 1 } }
-  lamp2: !include { file: lamp_slot.yaml, vars: { slot: 1, n: 2 } }
-  lamp3: !include { file: lamp_slot.yaml, vars: { slot: 2, n: 3 } }
-  lamp4: !include { file: lamp_slot.yaml, vars: { slot: 3, n: 4 } }
-  lamp5: !include { file: lamp_slot.yaml, vars: { slot: 4, n: 5 } }
-  lamp6: !include { file: lamp_slot.yaml, vars: { slot: 5, n: 6 } }
-  lamp7: !include { file: lamp_slot.yaml, vars: { slot: 6, n: 7 } }
-  lamp8: !include { file: lamp_slot.yaml, vars: { slot: 7, n: 8 } }
+external_components:
+  - source: github://kernelorg/sengled-pulse-link
+    components: [sengled_pulse]
+  # or, with this repository checked out next to the config:
+  # - source: { type: local, path: ../components }
 
 esp32:
   board: esp32dev
@@ -118,242 +66,17 @@ uart:
   rx_pin: GPIO16   # <- gateway CPU TX (net of EH-MB05 pin 39 UART_RX)
   baud_rate: 115200
 
-interval:
-  # TX queue + RX parser; publishes state from the gateway's replies
-  - interval: 20ms
-    then:
-      - lambda: |-
-          sengled::Frame f;
-          while (sengled::poll(id(pulse_uart), f)) {
-            sengled::pairing::on_frame(f);
-            sengled::slots::on_frame(f);
-            if (f.dst != sengled::CLIENT) continue;
-            if (f.is(2, 4) && f.src == sengled::MASTER) {        // gateway speaker_state
-              auto ch = id(gw_channel_sel).at(f.at(2));
-              if (ch.has_value()) id(gw_channel_sel).publish_state(*ch);
-              auto e = id(gw_eq_sel).at(f.at(3));
-              if (e.has_value()) id(gw_eq_sel).publish_state(*e);
-              id(gw_mute_sw).publish_state(f.at(4) != 0);
-            } else if (f.is(0, 0) && f.payload.size() >= 36) {   // generic_info
-              uint32_t pid = f.at(32) | (f.at(33) << 8) | (f.at(34) << 16) | ((uint32_t) f.at(35) << 24);
-              std::string name(f.payload.begin(), f.payload.begin() + 32);
-              name = name.c_str();  // cut at the first NUL
-              const char *kind = pid == 1 ? "single light" : pid == 2 ? "audio box, no lamp" : "lamp";
-              id(gw_type).publish_state(name + " (productID " + std::to_string(pid) + ", " + kind + ")");
-            } else if (f.is(4, 7)) {                             // audio source
-              auto s = id(source_sel).at(f.at(0));
-              if (s.has_value()) id(source_sel).publish_state(*s);
-            } else if (f.is(0, 12) && f.at(0) == 0) {            // light memory
-              id(memory_sw).publish_state(f.at(2) != 0);
-            }
-          }
-          // "All lamps": show the slots' combined state without writing it
-          // back to the lamps (no output write is triggered)
-          if (sengled::slots::lights_changed) {
-            sengled::slots::lights_changed = false;
-            bool on;
-            uint8_t level;
-            if (sengled::slots::all_light(on, level)) {
-              auto *ls = id(all_lamps_light);
-              ls->remote_values.set_state(on);
-              if (on && level > 0) ls->remote_values.set_brightness(level / 100.0f);
-              ls->current_values = ls->remote_values;
-              ls->publish_state();
-            }
-          }
-          // Volume / Mute / Channel / Equalizer: the lamps' combined state
-          // (publish_state does not run the set actions, nothing is sent)
-          if (sengled::slots::sounds_changed) {
-            sengled::slots::sounds_changed = false;
-            auto a = sengled::slots::all_sound();
-            if (a.known) {
-              id(volume_num).publish_state(a.volume);
-              id(mute_sw).publish_state(a.mute);
-              if (a.channel >= 0) {
-                auto ch = id(channel_sel).at(a.channel);
-                if (ch.has_value()) id(channel_sel).publish_state(*ch);
-              }
-              if (a.eq >= 0) {
-                auto e = id(eq_sel).at(a.eq);
-                if (e.has_value()) id(eq_sel).publish_state(*e);
-              }
-            }
-          }
-          sengled::pairing::loop();
-          if (sengled::pairing::status_changed) {
-            sengled::pairing::status_changed = false;
-            id(pair_status).publish_state(sengled::pairing::status);
-          }
-          if (sengled::pairing::nodes_changed) {
-            sengled::pairing::nodes_changed = false;
-            id(gw_nodes).publish_state(sengled::pairing::nodes);
-          }
-  # refresh state (also picks up changes made from the phone app)
-  - interval: 30s
-    then:
-      - lambda: |-
-          sengled::speaker_state(sengled::MASTER);
-          sengled::get_audio_source();
-          sengled::poll_slots();
-
-output:
-  - platform: template
-    id: all_lamps_out
-    type: float
-    write_action:
-      - lambda: sengled::all_lamps_light(state);
-
-light:
-  # transitions would flood the UART with brightness frames
-  - platform: monochromatic
-    id: all_lamps_light
-    name: All lamps
-    output: all_lamps_out
-    gamma_correct: 1.0
-    default_transition_length: 0s
-
-number:
-  # all lamps (broadcast); the gateway's own speaker is not affected
-  - platform: template
-    id: volume_num
-    name: Volume
-    icon: mdi:volume-high
-    min_value: 0
-    max_value: 100
-    step: 1
-    unit_of_measurement: "%"
-    optimistic: true
-    set_action:
-      - lambda: |-
-          sengled::all_lamps_volume((uint8_t) x);   // also unmutes, like the app
-          id(mute_sw).publish_state(false);
-
-switch:
-  - platform: template
-    id: gw_mute_sw
-    name: Gateway mute
-    icon: mdi:volume-off
-    optimistic: true
-    restore_mode: DISABLED   # no command at boot, state is read back
-    turn_on_action:
-      - lambda: sengled::gateway_mute(true);
-    turn_off_action:
-      - lambda: sengled::gateway_mute(false);
-  - platform: template
-    id: mute_sw
-    name: Mute
-    icon: mdi:volume-off
-    optimistic: true
-    restore_mode: DISABLED   # no command at boot, state is read back
-    turn_on_action:
-      - lambda: sengled::all_lamps_mute(true);
-    turn_off_action:
-      - lambda: sengled::all_lamps_mute(false);
-  - platform: template
-    id: memory_sw
-    name: Light memory
-    entity_category: config
-    optimistic: true
-    restore_mode: DISABLED   # no command at boot, state is read back
-    turn_on_action:
-      - lambda: sengled::set_config(sengled::ALL, 0, 1);
-    turn_off_action:
-      - lambda: sengled::set_config(sengled::ALL, 0, 0);
-
-select:
-  # option order = protocol value
-  - platform: template
-    id: gw_eq_sel
-    name: Gateway equalizer
-    options: [normal, pop, jazz, classic, rock, movie]
-    optimistic: true
-    set_action:
-      - lambda: |-
-          auto i = id(gw_eq_sel).index_of(x);
-          if (i.has_value()) sengled::eq(sengled::MASTER, *i);
-  - platform: template
-    id: gw_channel_sel
-    name: Gateway channel
-    icon: mdi:speaker
-    options: [right, left, left+right]
-    optimistic: true
-    set_action:
-      - lambda: |-
-          auto i = id(gw_channel_sel).index_of(x);
-          if (i.has_value()) sengled::channel(sengled::MASTER, *i);
-  - platform: template
-    id: eq_sel
-    name: Equalizer
-    options: [normal, pop, jazz, classic, rock, movie]
-    optimistic: true
-    set_action:
-      - lambda: |-
-          auto i = id(eq_sel).index_of(x);
-          if (i.has_value()) sengled::all_lamps_eq(*i);
-  - platform: template
-    id: channel_sel
-    name: Channel
-    options: [right, left, left+right]
-    optimistic: true
-    set_action:
-      - lambda: |-
-          auto i = id(channel_sel).index_of(x);
-          if (i.has_value()) sengled::all_lamps_channel(*i);
-  - platform: template
-    id: source_sel
-    name: Audio source
-    options: [3.5mm, bluetooth]
-    optimistic: true
-    set_action:
-      - lambda: |-
-          auto i = id(source_sel).index_of(x);
-          if (i.has_value()) sengled::audio_source(*i);
-
-text:
-  # lamp address for add/remove: "00020056", or the label/QR text "...;AD:00020056"
-  - platform: template
-    id: pair_addr
-    name: Lamp address
-    icon: mdi:identifier
-    entity_category: config
-    mode: text
-    max_length: 64
-    optimistic: true
-    restore_value: true
-
-text_sensor:
-  - platform: template
-    id: pair_status
-    name: Pairing status
-    icon: mdi:link-variant
-    entity_category: diagnostic
-  - platform: template
-    id: gw_type
-    name: Gateway type
-    icon: mdi:information-outline
-    entity_category: diagnostic
-  - platform: template
-    id: gw_nodes
-    name: Gateway nodes
-    icon: mdi:lightbulb-group
-    entity_category: diagnostic
-
-button:
-  - platform: template
-    name: Add lamp
-    icon: mdi:link-plus
-    entity_category: config
-    on_press:
-      - lambda: sengled::pairing::start_add(id(pair_addr).state);
-  - platform: template
-    name: Remove lamp
-    icon: mdi:link-off
-    entity_category: config
-    on_press:
-      - lambda: sengled::pairing::start_remove(id(pair_addr).state);
-  - platform: template
-    name: Refresh node list
-    icon: mdi:refresh
-    entity_category: diagnostic
-    on_press:
-      - lambda: sengled::enum_slaves();
+sengled_pulse:
+  id: pulse
+  uart_id: pulse_uart
+  lamp_slots: 8
+  # optional: mute all lamps and the gateway while a media player on this
+  # node plays nothing (speakers muted by hand stay muted)
+  # auto_mute:
+  #   media_player: speaker_player
+  #   delay: 3s
+  # optional: rename or hide entities, e.g.
+  # audio_source:
+  #   options: [3.5mm, network]
+  # slots:
+  #   - light: { name: Kitchen }

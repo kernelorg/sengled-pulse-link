@@ -80,73 +80,84 @@ python3 main.py mode=send port=/dev/rfcomm0 cmd=handshake
 
 ## ESPHome
 
-W `esphome/` znajduje się węzeł ESPHome: ESP32 podłącza się do wewnętrznego
-UART bramki i udostępnia sterowanie w Home Assistant:
+`components/sengled_pulse` to zewnętrzny komponent ESPHome: ESP32 podłączony
+do wewnętrznego UART bramki udostępnia ją w Home Assistant. Jeden blok w
+konfiguracji tworzy wszystkie encje, nie trzeba kopiować lambd:
 
-- światło: *All lamps* i sloty *Lamp 1*, *Lamp 2*, … (w przykładzie 8,
-  bramka obsługuje do 8 żarówek); każdy slot ma też
-  własne *volume*, *mute* i *channel*; wł./wył., jasność i dźwięk są odczytywane
-  z żarówki;
-- *Volume*, *Mute*, *Equalizer*, *Channel*, pamięć światła: wszystkie żarówki;
-- *Gateway mute*, *Gateway equalizer*, *Gateway channel*: własne wyjście
-  audio bramki, osobno od żarówek (głośności bramki nie da się ustawić);
+```yaml
+external_components:
+  - source: github://kernelorg/sengled-pulse-link
+    components: [sengled_pulse]
+
+uart:
+  id: pulse_uart
+  tx_pin: GPIO17
+  rx_pin: GPIO16
+  baud_rate: 115200
+
+sengled_pulse:
+  uart_id: pulse_uart
+  lamp_slots: 2          # ile żarówek pokazać, 1..8
+  auto_mute:             # opcjonalnie
+    media_player: speaker_player
+    delay: 3s
+```
+
+Pełny przykład: `esphome/sengled-pulse.yaml`. Encje:
+
+- światło: *All lamps* i sloty żarówek *Lamp 1*, *Lamp 2*, …; każdy slot ma
+  też własne *volume*, *mute*, *channel*, *address* i przycisk *identify*
+  (żarówka miga); wł./wył., jasność i dźwięk są odczytywane z żarówki;
+- *Volume*, *Mute*, *Equalizer*, *Channel*, *Light memory*: wszystkie żarówki;
+- *Gateway mute*, *Gateway equalizer*, *Gateway channel*: własne wyjście audio
+  bramki, osobno od żarówek (głośności bramki nie da się ustawić: bramka
+  zapamiętuje wartość, ale jej nie stosuje, aplikacja też jej nie ustawia);
   *Audio source*;
-- `sengled::auto_mute()` / `auto_unmute()` wyciszają wszystkie żarówki
-  i bramkę, np. gdy odtwarzacz na ESP nic nie gra; wyciszone ręcznie
-  zostają wyciszone;
 - *Gateway type*: nazwa bramki i productID z `generic_info`, np.
   `C01-BR30 Link (productID 2, audio box, no lamp)`;
-- przyciski „identify” (żarówka miga);
-- dodawanie i usuwanie żarówek: wpisz adres żarówki (`00020056` lub tekst
-  QR `...;AD:00020056`) w *Lamp address* i naciśnij *Add lamp* /
-  *Remove lamp*. Procedura jest taka sama jak w aplikacji i trwa około
-  20 sekund; postęp widać w *Pairing status*, listę żarówek bramki w *Gateway
-  nodes*. Jeśli podczas dodawania coś się nie powiedzie, kod sieci bramki
-  zostaje przywrócony.
+- dodawanie i usuwanie żarówek: adres żarówki (`00020056` albo tekst QR
+  `...;AD:00020056`) w *Lamp address*, potem *Add lamp* / *Remove lamp*.
+  Procedura jest taka sama jak w aplikacji i trwa około 20 s; postęp widać w
+  *Pairing status*, listę żarówek bramki w *Gateway nodes*. Jeśli dodawanie
+  się nie uda, kod sieci bramki zostaje przywrócony.
 
-Sloty są przypisywane do żarówek w czasie działania: w konfiguracji nie ma
-adresów i przy zmianie żarówek nie trzeba ponownie wgrywać firmware.
+Każdy klucz encji (`all_lamps`, `volume`, `gateway_mute`, `audio_source`, …)
+przyjmuje zwykłe opcje encji, by zmienić jej nazwę lub ją ukryć; ustawienia
+slotów są w `slots:`, np. `slots: [{light: {name: Kitchen}}]`. Etykiety opcji
+select można zmienić przez `options:` (kolejność = wartość protokołu).
 
-- po starcie sloty są wypełniane według listy węzłów bramki;
+`auto_mute` wycisza wszystkie żarówki i bramkę, gdy podany odtwarzacz nic nie
+gra dłużej niż `delay`, i wyłącza wyciszenie, gdy dźwięk wraca; głośniki
+wyciszone ręcznie zostają wyciszone. Z lambdy: `id(pulse).auto_mute()` /
+`id(pulse).auto_unmute()`.
+
+Informacja zwrotna:
+
+- stan jest odczytywany z bramki i żarówek przy starcie i co 30 s, więc zmiany
+  z aplikacji też są widoczne;
+- zmiana dla wszystkich żarówek (światło, głośność, wyciszenie, kanał,
+  korektor) od razu pokazuje się we wszystkich slotach i jest potwierdzana
+  następnym odczytem;
+- *All lamps* pokazuje łączny stan żarówek jak grupa świateł w Home Assistant
+  (wł., gdy świeci choć jedna, jasność = średnia włączonych); *Volume* to
+  średnia głośność, *Mute* jest wł., gdy wyciszone są wszystkie żarówki,
+  *Channel* / *Equalizer* to wspólna wartość żarówek.
+
+Sloty są przypisywane do żarówek w trakcie pracy, w konfiguracji nie ma
+adresów i nie trzeba wgrywać firmware'u przy zmianie żarówek:
+
+- po starcie sloty są wypełniane z listy węzłów bramki;
 - żarówka dodana przez *Add lamp* zajmuje pierwszy wolny slot, usunięta
-  zwalnia swój;
-- przypisanie jest zapisane we flash, więc po restarcie żarówka zostaje w swoim
-  slocie;
+  zwalnia swój; żarówka bez wolnego slotu jest zapisywana w logu — zwiększ
+  `lamp_slots`;
+- przypisanie jest zapisane we flashu, więc po restarcie żarówka zostaje w
+  swoim slocie;
 - *Lamp N address* pokazuje, która żarówka jest w slocie (`empty`, jeśli
-  pusty). Zmień nazwy encji w Home Assistant według uznania, nieużywane sloty
-  ukryj.
+  żadna).
 
-Zwolniony slot zajmie następna nowa żarówka, więc po usunięciu żarówki sprawdź
-nazwę nadaną temu slotowi.
-
-### Liczba slotów
-
-Każdy slot to jeden pakiet `lamp_slot.yaml`. Slotów musi być co najmniej tyle,
-ile żarówek sparowanych z bramką (maksymalnie 8); żarówka bez wolnego slotu
-trafia do logu jako `no free slot`. Aby zmienić liczbę, popraw dwa miejsca
-w `sengled-pulse.yaml`:
-
-1. `substitutions` → `lamp_slots`: liczba slotów, np. `"3"`;
-2. `packages`: jedna linia na slot, numeracja od 1, `slot` = numer − 1:
-
-   ```yaml
-   packages:
-     lamp1: !include { file: lamp_slot.yaml, vars: { slot: 0, n: 1 } }
-     lamp2: !include { file: lamp_slot.yaml, vars: { slot: 1, n: 2 } }
-     lamp3: !include { file: lamp_slot.yaml, vars: { slot: 2, n: 3 } }
-   ```
-
-Następnie wgraj firmware. Po aktualizacji sloty są ponownie wypełniane według
-listy węzłów bramki. Usunięte sloty znikają z Home Assistant; jeśli ich encje
-zostały jako „niedostępne”, usuń je tam.
-
-Aby dodać żarówkę: włącz ją blisko bramki, wpisz adres (lub tekst QR)
-w *Lamp address*, naciśnij *Add lamp* i poczekaj na `added` w *Pairing
-status*.
-
-Stan jest odczytywany z bramki przy starcie i co 30 sekund, więc zmiany
-wprowadzone z telefonu też się pojawiają. Encje światła działają w trybie
-optymistycznym.
+Zwolniony slot zajmie następna nowa żarówka, więc po usunięciu żarówki
+sprawdź nazwy nadane temu slotowi. Po zmniejszeniu `lamp_slots` usuń w Home
+Assistant pozostałe encje, jeśli wiszą jako „niedostępne”.
 
 | ESP32 | bramka |
 |---|---|
