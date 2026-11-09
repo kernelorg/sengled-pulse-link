@@ -18,9 +18,9 @@
 # (the gateway takes up to 8); a lamp that finds no free slot is logged.
 # "Lamp N address" shows which lamp is in a slot ("empty" if none).
 #
-# Gateway sound: "Gateway mute/equalizer/channel" act on the gateway's own
-# speaker output (its volume can not be set: the gateway ignores it);
-# "Volume", "Mute", "Equalizer", "Channel" act on all lamps.
+# Sound: "Equalizer" and "Mute" act on all lamps and the gateway, "Volume"
+# on all lamps (the gateway's volume can not be set: it ignores it).
+# "Gateway mute/channel" and "Lamp N mute/channel" act on one speaker.
 #
 # Adding a lamp: power it on near the gateway, put its address (or the whole
 # QR text) into "Lamp address", press "Add lamp", wait about 20 s until

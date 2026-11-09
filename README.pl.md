@@ -117,12 +117,10 @@ Bramka i wszystkie żarówki:
 | klucz | typ | nazwa domyślna | |
 |---|---|---|---|
 | `all_lamps` | light | All lamps | wszystkie żarówki; wł., gdy świeci choć jedna, jasność = średnia włączonych |
-| `volume` | number 0..100 | Volume | wszystkie żarówki, wyłącza wyciszenie; pokazuje średnią głośność |
-| `mute` | switch | Mute | wszystkie żarówki; wł., gdy wyciszone są wszystkie |
-| `equalizer` | select | Equalizer | wszystkie żarówki: normal, pop, jazz, classic, rock, movie |
-| `channel` | select | Channel | wszystkie żarówki: right, left, left+right |
+| `volume` | number 0..100 | Volume | wszystkie żarówki, wyłącza wyciszenie ich i bramki; pokazuje średnią głośność żarówek |
+| `mute` | switch | Mute | wszystkie żarówki i bramka; wł., gdy wyciszone są wszystkie |
+| `equalizer` | select | Equalizer | jeden dla całego systemu (wszystkie żarówki i bramka): normal, pop, jazz, classic, rock, movie |
 | `gateway_mute` | switch | Gateway mute | własne wyjście audio bramki |
-| `gateway_equalizer` | select | Gateway equalizer | własne wyjście audio bramki |
 | `gateway_channel` | select | Gateway channel | własne wyjście audio bramki |
 | `audio_source` | select | Audio source | 3.5mm, bluetooth |
 | `light_memory` | switch | Light memory | pamięć światła żarówek (parametr 0) |

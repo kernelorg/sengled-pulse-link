@@ -96,9 +96,7 @@ ENTITIES = {
     "volume": _entity(_volume_schema(), "Volume"),
     "mute": _entity(_mute_schema(), "Mute"),
     "equalizer": _entity(_select_schema(EQ_OPTIONS), "Equalizer"),
-    "channel": _entity(_select_schema(CHANNEL_OPTIONS, "mdi:speaker"), "Channel"),
     "gateway_mute": _entity(_mute_schema(), "Gateway mute"),
-    "gateway_equalizer": _entity(_select_schema(EQ_OPTIONS), "Gateway equalizer"),
     "gateway_channel": _entity(_select_schema(CHANNEL_OPTIONS, "mdi:speaker"), "Gateway channel"),
     "audio_source": _entity(_select_schema(SOURCE_OPTIONS), "Audio source"),
     "light_memory": _entity(
@@ -246,9 +244,7 @@ async def to_code(config):
     cg.add(hub.set_volume(await _number(hub, config["volume"], "VOLUME")))
     cg.add(hub.set_mute(await _switch(hub, config["mute"], "MUTE")))
     cg.add(hub.set_equalizer(await _select(hub, config["equalizer"], "EQUALIZER")))
-    cg.add(hub.set_channel(await _select(hub, config["channel"], "CHANNEL")))
     cg.add(hub.set_gateway_mute(await _switch(hub, config["gateway_mute"], "GATEWAY_MUTE")))
-    cg.add(hub.set_gateway_equalizer(await _select(hub, config["gateway_equalizer"], "GATEWAY_EQUALIZER")))
     cg.add(hub.set_gateway_channel(await _select(hub, config["gateway_channel"], "GATEWAY_CHANNEL")))
     cg.add(hub.set_audio_source(await _select(hub, config["audio_source"], "AUDIO_SOURCE")))
     cg.add(hub.set_light_memory(await _switch(hub, config["light_memory"], "LIGHT_MEMORY")))

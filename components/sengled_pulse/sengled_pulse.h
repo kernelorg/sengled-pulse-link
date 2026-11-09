@@ -34,9 +34,7 @@ enum class Kind : uint8_t {
   VOLUME,
   MUTE,
   EQUALIZER,
-  CHANNEL,
   GATEWAY_MUTE,
-  GATEWAY_EQUALIZER,
   GATEWAY_CHANNEL,
   AUDIO_SOURCE,
   LIGHT_MEMORY,
@@ -128,9 +126,7 @@ class SengledPulse : public PollingComponent, public uart::UARTDevice {
   void set_volume(number::Number *n) { volume_ = n; }
   void set_mute(switch_::Switch *s) { mute_ = s; }
   void set_equalizer(select::Select *s) { equalizer_ = s; }
-  void set_channel(select::Select *s) { channel_ = s; }
   void set_gateway_mute(switch_::Switch *s) { gw_mute_ = s; }
-  void set_gateway_equalizer(select::Select *s) { gw_equalizer_ = s; }
   void set_gateway_channel(select::Select *s) { gw_channel_ = s; }
   void set_audio_source(select::Select *s) { audio_source_ = s; }
   void set_light_memory(switch_::Switch *s) { light_memory_ = s; }
@@ -156,9 +152,9 @@ class SengledPulse : public PollingComponent, public uart::UARTDevice {
 
   // ---- public API, e.g. for lambdas ----
   // Mute every speaker (all lamps and the gateway) / undo it; speakers muted
-  // by hand stay muted. auto_unmute() returns whether the gateway was unmuted.
+  // by hand stay muted.
   void auto_mute();
-  bool auto_unmute();
+  void auto_unmute();
   void start_add(const std::string &addr_text);
   void start_remove(const std::string &addr_text);
   Link &link() { return link_; }
@@ -178,7 +174,7 @@ class SengledPulse : public PollingComponent, public uart::UARTDevice {
     uint32_t light_ignore_until{0};  // replies before this show the state before the last command
     // sound (speaker_state)
     bool sound_known{false}, sound_dirty{false};
-    uint8_t channel_v{0}, eq_v{0}, mute_v{0}, volume_v{0};
+    uint8_t channel_v{0}, mute_v{0}, volume_v{0};
     uint32_t sound_ignore_until{0};
     bool user_muted{false};  // muted by hand (survives the automatic mute)
   };
@@ -190,8 +186,9 @@ class SengledPulse : public PollingComponent, public uart::UARTDevice {
   void on_nodes_(const std::vector<uint32_t> &nodes);
   // state shown before the lamps confirm it; -1 = keep
   void expect_light_all_(bool on, uint8_t level);
-  void expect_sound_(int i, int volume, int mute, int channel, int eq);
-  void expect_sound_all_(int volume, int mute, int channel, int eq);
+  void expect_sound_(int i, int volume, int mute, int channel);
+  void expect_sound_all_(int volume, int mute, int channel);
+  void expect_gateway_mute_(bool mute);
   // publish what changed
   void publish_();
   // lamp commands
@@ -219,12 +216,15 @@ class SengledPulse : public PollingComponent, public uart::UARTDevice {
   SengledLight *all_lamps_{nullptr};
   number::Number *volume_{nullptr};
   switch_::Switch *mute_{nullptr}, *gw_mute_{nullptr}, *light_memory_{nullptr};
-  select::Select *equalizer_{nullptr}, *channel_{nullptr}, *gw_equalizer_{nullptr}, *gw_channel_{nullptr},
+  select::Select *equalizer_{nullptr}, *gw_channel_{nullptr},
       *audio_source_{nullptr};
   text::Text *lamp_address_{nullptr};
   text_sensor::TextSensor *pairing_status_{nullptr}, *gateway_type_{nullptr}, *gateway_nodes_{nullptr};
 
   bool auto_muted_{false}, gw_user_muted_{false};
+  int8_t gw_mute_v_{-1};  // gateway muted, -1 = unknown
+  bool gw_mute_dirty_{false};
+  uint32_t gw_mute_ignore_until_{0};
 #ifdef USE_MEDIA_PLAYER
   media_player::MediaPlayer *player_{nullptr};
 #endif

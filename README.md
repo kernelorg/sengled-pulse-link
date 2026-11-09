@@ -115,12 +115,10 @@ Gateway and all lamps:
 | key | type | default name | |
 |---|---|---|---|
 | `all_lamps` | light | All lamps | all lamps; on when any lamp is on, brightness = mean of the lamps that are on |
-| `volume` | number 0..100 | Volume | all lamps, unmutes them; shows the mean volume |
-| `mute` | switch | Mute | all lamps; on when all lamps are muted |
-| `equalizer` | select | Equalizer | all lamps: normal, pop, jazz, classic, rock, movie |
-| `channel` | select | Channel | all lamps: right, left, left+right |
+| `volume` | number 0..100 | Volume | all lamps, unmutes them and the gateway; shows the mean volume of the lamps |
+| `mute` | switch | Mute | all lamps and the gateway; on when all of them are muted |
+| `equalizer` | select | Equalizer | one for the whole system (all lamps and the gateway): normal, pop, jazz, classic, rock, movie |
 | `gateway_mute` | switch | Gateway mute | the gateway's own audio output |
-| `gateway_equalizer` | select | Gateway equalizer | the gateway's own audio output |
 | `gateway_channel` | select | Gateway channel | the gateway's own audio output |
 | `audio_source` | select | Audio source | 3.5mm, bluetooth |
 | `light_memory` | switch | Light memory | light memory of the lamps (config item 0) |

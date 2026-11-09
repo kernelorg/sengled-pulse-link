@@ -149,14 +149,20 @@ void SengledPulse::on_frame_(const Frame &f) {
     return;
   }
 
-  if (f.src != MASTER) {
+  // the gateway answers some queries (e.g. generic_info) from FFFFFFFE
+  if (f.src != MASTER && f.src != CLIENT) {
     on_slot_frame_(f);
     return;
   }
   if (f.is(2, 4)) {  // gateway speaker_state: [2] channel, [3] eq, [4] mute
     if (gw_channel_ != nullptr && f.at(2) < gw_channel_->size()) gw_channel_->publish_state((size_t) f.at(2));
-    if (gw_equalizer_ != nullptr && f.at(3) < gw_equalizer_->size()) gw_equalizer_->publish_state((size_t) f.at(3));
-    if (gw_mute_ != nullptr) gw_mute_->publish_state(f.at(4) != 0);
+    // one equalizer for the whole system (the app sends it to all and reads
+    // it from the gateway)
+    if (equalizer_ != nullptr && f.at(3) < equalizer_->size()) equalizer_->publish_state((size_t) f.at(3));
+    if (!before(gw_mute_ignore_until_)) {  // else stale
+      gw_mute_v_ = f.at(4) != 0;
+      gw_mute_dirty_ = all_sound_dirty_ = true;
+    }
   } else if (f.is(0, 0) && f.payload.size() >= 36) {  // generic_info
     uint32_t pid = f.u32(32);
     std::string name(f.payload.begin(), f.payload.begin() + 32);
@@ -191,7 +197,6 @@ void SengledPulse::on_slot_frame_(const Frame &f) {
              f.at(5));
     if (before(s.sound_ignore_until)) return;  // stale
     s.channel_v = f.at(2);
-    s.eq_v = f.at(3);
     s.mute_v = f.at(4);
     s.volume_v = f.at(5);
     s.sound_known = s.sound_dirty = all_sound_dirty_ = true;
@@ -265,7 +270,7 @@ void SengledPulse::expect_light_all_(bool on, uint8_t level) {
   all_light_dirty_ = true;
 }
 
-void SengledPulse::expect_sound_(int i, int volume, int mute, int channel, int eq) {
+void SengledPulse::expect_sound_(int i, int volume, int mute, int channel) {
   Slot &s = slots_[i];
   if (!s.addr) return;
   if (!s.sound_known) {
@@ -279,13 +284,18 @@ void SengledPulse::expect_sound_(int i, int volume, int mute, int channel, int e
   if (volume >= 0) s.volume_v = volume;
   if (mute >= 0) s.mute_v = mute;
   if (channel >= 0) s.channel_v = channel;
-  if (eq >= 0) s.eq_v = eq;
   s.sound_ignore_until = millis() + STALE_MS;
   s.sound_dirty = all_sound_dirty_ = true;
 }
 
-void SengledPulse::expect_sound_all_(int volume, int mute, int channel, int eq) {
-  for (size_t i = 0; i < n_slots_; i++) expect_sound_(i, volume, mute, channel, eq);
+void SengledPulse::expect_sound_all_(int volume, int mute, int channel) {
+  for (size_t i = 0; i < n_slots_; i++) expect_sound_(i, volume, mute, channel);
+}
+
+void SengledPulse::expect_gateway_mute_(bool mute) {
+  gw_mute_v_ = mute;
+  gw_mute_ignore_until_ = millis() + STALE_MS;
+  gw_mute_dirty_ = all_sound_dirty_ = true;
 }
 
 void SengledPulse::publish_() {
@@ -321,32 +331,29 @@ void SengledPulse::publish_() {
       all_lamps_->show(n_on > 0, n_on ? (uint8_t) ((sum + n_on / 2) / n_on) : 0);
   }
 
-  // Volume = mean, Mute = every lamp muted, Channel / Equalizer = the common
-  // value (left as it is when the lamps differ)
+  if (gw_mute_dirty_) {
+    gw_mute_dirty_ = false;
+    if (gw_mute_ != nullptr && gw_mute_v_ >= 0) gw_mute_->publish_state(gw_mute_v_ != 0);
+  }
+
+  // Volume = mean of the lamps, Mute = every lamp and the gateway muted
   if (all_sound_dirty_) {
     all_sound_dirty_ = false;
-    int n = 0, sum = 0, muted = 0, ch = -1, eq = -1;
+    int n = 0, sum = 0, speakers = 0, muted = 0;
     for (size_t i = 0; i < n_slots_; i++) {
       const Slot &s = slots_[i];
       if (!s.addr || !s.sound_known) continue;
-      if (n == 0) {
-        ch = s.channel_v;
-        eq = s.eq_v;
-      } else {
-        if (ch != s.channel_v) ch = -1;
-        if (eq != s.eq_v) eq = -1;
-      }
       n++;
       sum += s.volume_v;
+      speakers++;
       if (s.mute_v) muted++;
     }
-    if (n) {
-      if (volume_ != nullptr) volume_->publish_state((sum + n / 2) / n);
-      if (mute_ != nullptr) mute_->publish_state(muted == n);
-      if (channel_ != nullptr && ch >= 0 && (size_t) ch < channel_->size()) channel_->publish_state((size_t) ch);
-      if (equalizer_ != nullptr && eq >= 0 && (size_t) eq < equalizer_->size())
-        equalizer_->publish_state((size_t) eq);
+    if (gw_mute_v_ >= 0) {
+      speakers++;
+      if (gw_mute_v_) muted++;
     }
+    if (n && volume_ != nullptr) volume_->publish_state((sum + n / 2) / n);
+    if (speakers && mute_ != nullptr) mute_->publish_state(muted == speakers);
   }
 }
 
@@ -413,28 +420,33 @@ void SengledPulse::on_number(Kind kind, int slot, float value) {
   if (kind == Kind::VOLUME) {
     // like the app's volume slider: set the volume on all lamps, then unmute
     for (size_t i = 0; i < n_slots_; i++) slots_[i].user_muted = false;
+    // "all" includes the gateway, so it is unmuted too
+    gw_user_muted_ = false;
     link_.volume(ALL, v);
     link_.mute(ALL, false);
-    expect_sound_all_(v, 0, -1, -1);
-    if (mute_ != nullptr) mute_->publish_state(false);
+    expect_sound_all_(v, 0, -1);
+    expect_gateway_mute_(false);
   } else if (kind == Kind::SLOT_VOLUME && bound_(slot)) {
     slots_[slot].user_muted = false;
     link_.volume(slots_[slot].addr, v);
     link_.mute(slots_[slot].addr, false);
-    expect_sound_(slot, v, 0, -1, -1);
+    expect_sound_(slot, v, 0, -1);
   }
 }
 
 void SengledPulse::on_switch(Kind kind, int slot, bool state) {
   switch (kind) {
-    case Kind::MUTE:
+    case Kind::MUTE:  // all lamps and the gateway
       for (size_t i = 0; i < n_slots_; i++) slots_[i].user_muted = state;
+      gw_user_muted_ = state;
       link_.mute(ALL, state);
-      expect_sound_all_(-1, state, -1, -1);
+      expect_sound_all_(-1, state, -1);
+      expect_gateway_mute_(state);
       break;
     case Kind::GATEWAY_MUTE:
       gw_user_muted_ = state;
       link_.mute(MASTER, state);
+      expect_gateway_mute_(state);
       break;
     case Kind::LIGHT_MEMORY:
       link_.set_config(ALL, 0, state ? 1 : 0);
@@ -443,7 +455,7 @@ void SengledPulse::on_switch(Kind kind, int slot, bool state) {
       if (!bound_(slot)) break;
       slots_[slot].user_muted = state;
       link_.mute(slots_[slot].addr, state);
-      expect_sound_(slot, -1, state, -1, -1);
+      expect_sound_(slot, -1, state, -1);
       break;
     default:
       break;
@@ -453,16 +465,8 @@ void SengledPulse::on_switch(Kind kind, int slot, bool state) {
 void SengledPulse::on_select(Kind kind, int slot, size_t index) {
   uint8_t v = (uint8_t) index;  // option order = protocol value
   switch (kind) {
-    case Kind::EQUALIZER:
+    case Kind::EQUALIZER:  // all lamps and the gateway
       link_.eq(ALL, v);
-      expect_sound_all_(-1, -1, -1, v);
-      break;
-    case Kind::CHANNEL:
-      link_.channel(ALL, v);
-      expect_sound_all_(-1, -1, v, -1);
-      break;
-    case Kind::GATEWAY_EQUALIZER:
-      link_.eq(MASTER, v);
       break;
     case Kind::GATEWAY_CHANNEL:
       link_.channel(MASTER, v);
@@ -473,7 +477,7 @@ void SengledPulse::on_select(Kind kind, int slot, size_t index) {
     case Kind::SLOT_CHANNEL:
       if (!bound_(slot)) break;
       link_.channel(slots_[slot].addr, v);
-      expect_sound_(slot, -1, -1, v, -1);
+      expect_sound_(slot, -1, -1, v);
       break;
     default:
       break;
@@ -517,10 +521,11 @@ void SengledPulse::auto_mute() {
   link_.mute(ALL, true);
   link_.mute(ALL, true, 200);
   link_.mute(MASTER, true, 400);
+  expect_gateway_mute_(true);
 }
 
-bool SengledPulse::auto_unmute() {
-  if (!auto_muted_) return false;
+void SengledPulse::auto_unmute() {
+  if (!auto_muted_) return;
   auto_muted_ = false;
   ESP_LOGI(TAG, "playing: unmuting speakers");
   link_.mute(ALL, false);
@@ -531,9 +536,9 @@ bool SengledPulse::auto_unmute() {
       link_.mute(slots_[i].addr, true, 600);
     }
   link_.mute(MASTER, gw_user_muted_, 800);
+  expect_gateway_mute_(gw_user_muted_);
   for (size_t i = 0; i < n_slots_; i++)  // read the lamps' sound state back
     if (slots_[i].addr) link_.speaker_state(slots_[i].addr, 2000);
-  return !gw_user_muted_;
 }
 
 #ifdef USE_MEDIA_PLAYER
@@ -552,13 +557,10 @@ void SengledPulse::check_playing_() {
   auto st = player_->state;
   if (st == media_player::MEDIA_PLAYER_STATE_PLAYING || st == media_player::MEDIA_PLAYER_STATE_ANNOUNCING) {
     cancel_timeout("auto_mute");
-    if (auto_unmute() && gw_mute_ != nullptr) gw_mute_->publish_state(false);
+    auto_unmute();
     return;
   }
-  set_timeout("auto_mute", auto_mute_delay_ms_, [this]() {
-    auto_mute();
-    if (gw_mute_ != nullptr) gw_mute_->publish_state(true);
-  });
+  set_timeout("auto_mute", auto_mute_delay_ms_, [this]() { auto_mute(); });
 #endif
 }
 

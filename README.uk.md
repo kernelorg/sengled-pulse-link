@@ -116,12 +116,10 @@ sengled_pulse:
 | ключ | тип | ім'я за замовчуванням | |
 |---|---|---|---|
 | `all_lamps` | light | All lamps | усі лампи; увімк, якщо увімкнена хоч одна, яскравість — середня по увімкнених |
-| `volume` | number 0..100 | Volume | усі лампи, знімає mute; показує середню гучність |
-| `mute` | switch | Mute | усі лампи; увімк, якщо заглушені всі |
-| `equalizer` | select | Equalizer | усі лампи: normal, pop, jazz, classic, rock, movie |
-| `channel` | select | Channel | усі лампи: right, left, left+right |
+| `volume` | number 0..100 | Volume | усі лампи, знімає mute з них і зі шлюзу; показує середню гучність ламп |
+| `mute` | switch | Mute | усі лампи та шлюз; увімк, якщо заглушені всі |
+| `equalizer` | select | Equalizer | один на всю систему (усі лампи та шлюз): normal, pop, jazz, classic, rock, movie |
 | `gateway_mute` | switch | Gateway mute | власний аудіовихід шлюзу |
-| `gateway_equalizer` | select | Gateway equalizer | власний аудіовихід шлюзу |
 | `gateway_channel` | select | Gateway channel | власний аудіовихід шлюзу |
 | `audio_source` | select | Audio source | 3.5mm, bluetooth |
 | `light_memory` | switch | Light memory | пам'ять світла ламп (параметр 0) |
