@@ -114,10 +114,11 @@ class SengledText : public text::Text, public Component {
   ESPPreferenceObject pref_;
 };
 
-class SengledPulse : public Component, public uart::UARTDevice {
+class SengledPulse : public PollingComponent, public uart::UARTDevice {
  public:
   void setup() override;
   void loop() override;
+  void update() override;  // read the state of the gateway and all lamps
   void dump_config() override;
   float get_setup_priority() const override { return setup_priority::DATA; }
 

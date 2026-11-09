@@ -7,7 +7,6 @@
 # Every lamp has a fixed 4-byte address, e.g. 00020056. Where to find it:
 #   - new lamp: the QR code on the lamp. Scan it with any QR reader; the text
 #     looks like "SN:14411008EU01926;AD:00020056", the address is after "AD:".
-#     The phone app reads the same QR code when adding a lamp.
 #   - lamp already paired: the "Gateway nodes" sensor of this node, or
 #     `python3 main.py mode=nodes`.
 #
@@ -70,6 +69,7 @@ sengled_pulse:
   id: pulse
   uart_id: pulse_uart
   lamp_slots: 8
+  update_interval: 30s   # how often the gateway and every lamp are read
   # optional: mute all lamps and the gateway while a media player on this
   # node plays nothing (speakers muted by hand stay muted)
   # auto_mute:

@@ -15,7 +15,6 @@ static const char *const TAG = "sengled_pulse";
 static constexpr uint32_t STALE_MS = 900;
 static constexpr uint32_t BOOT_READY_MS = 5000;  // lights restore their state without sending anything
 static constexpr uint32_t BOOT_DONE_MS = 10000;  // lamps' mute state is known: automatic mute may act
-static constexpr uint32_t POLL_MS = 30000;       // refresh, also picks up changes made from the phone app
 
 static bool before(uint32_t t) { return (int32_t) (millis() - t) < 0; }
 static uint8_t percent(float level) {
@@ -107,11 +106,13 @@ void SengledPulse::setup() {
     boot_done_ = true;
     check_playing_();
   });
-  set_interval(POLL_MS, [this]() {
-    link_.speaker_state(MASTER);
-    link_.get_audio_source();
-    poll_slots_();
-  });
+}
+
+void SengledPulse::update() {
+  if (!ready_) return;  // the boot sequence reads everything
+  link_.speaker_state(MASTER);
+  link_.get_audio_source();
+  poll_slots_();
 }
 
 void SengledPulse::loop() {
@@ -122,7 +123,8 @@ void SengledPulse::loop() {
 }
 
 void SengledPulse::dump_config() {
-  ESP_LOGCONFIG(TAG, "Sengled Pulse Link:\n  Lamp slots: %u", n_slots_);
+  ESP_LOGCONFIG(TAG, "Sengled Pulse Link:\n  Lamp slots: %u\n  Update interval: %u ms", n_slots_,
+                (unsigned) get_update_interval());
   for (size_t i = 0; i < n_slots_; i++)
     ESP_LOGCONFIG(TAG, "  Lamp %u: %s", (unsigned) (i + 1), slots_[i].addr ? hex8(slots_[i].addr).c_str() : "empty");
 #ifdef USE_MEDIA_PLAYER

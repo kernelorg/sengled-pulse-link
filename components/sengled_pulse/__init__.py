@@ -39,7 +39,7 @@ CONF_SLOTS = "slots"
 CONF_AUTO_MUTE = "auto_mute"
 
 ns = cg.esphome_ns.namespace("sengled_pulse")
-SengledPulse = ns.class_("SengledPulse", cg.Component, uart.UARTDevice)
+SengledPulse = ns.class_("SengledPulse", cg.PollingComponent, uart.UARTDevice)
 SengledLight = ns.class_("SengledLight", light.LightOutput)
 SengledNumber = ns.class_("SengledNumber", number.Number)
 SengledSwitch = ns.class_("SengledSwitch", switch.Switch)
@@ -196,7 +196,8 @@ CONFIG_SCHEMA = cv.All(
             **{cv.Optional(key): schema for key, (schema, _) in ENTITIES.items()},
         }
     )
-    .extend(cv.COMPONENT_SCHEMA)
+    # how often the gateway and every lamp are read back
+    .extend(cv.polling_component_schema("30s"))
     .extend(uart.UART_DEVICE_SCHEMA),
 )
 

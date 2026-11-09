@@ -5,13 +5,6 @@
 Reverse engineering of the Sengled Pulse Link **C01-BR30** gateway and Pulse
 speaker bulbs.
 
-The protocol below was recovered from two sources that agree byte for byte:
-
-- a logic-analyzer capture of the UART between the Bluetooth module
-  (Ehong EH-MB05) and the gateway CPU, 115200 8N1;
-- the decompiled Android app *Sengled Pulse* 4.2.1 (`com.sengled.stspeaker`,
-  package `com.sengled.stspeaker.service.command`).
-
 The Bluetooth module is a transparent SPP ↔ UART bridge: the phone opens an
 RFCOMM socket with the standard SPP UUID `00001101-0000-1000-8000-00805F9B34FB`,
 and the frames it writes appear unchanged on the UART. The module itself only
@@ -25,8 +18,7 @@ lamp and pairing use it.
 
 - **New lamp:** the address is in the QR code on the lamp. Scan it with any QR
   reader; the text looks like `SN:14411008EU01926;AD:00020056`, and the address
-  is the part after `AD:`. The phone app reads the same QR code when you add a
-  lamp. `main.py` and ESPHome accept either the address or the whole QR text.
+  is the part after `AD:`. `main.py` and ESPHome accept either the address or the whole QR text.
 - **Lamp already paired:** `python3 main.py mode=nodes`, or the *Gateway nodes*
   sensor in ESPHome.
 
@@ -78,9 +70,8 @@ python3 main.py mode=send port=/dev/rfcomm0 cmd=handshake
 
 ## ESPHome
 
-`components/sengled_pulse` is an ESPHome external component: an ESP32
-connected to the gateway's internal UART exposes it to Home Assistant. One
-block in the config creates every entity, there are no lambdas to copy:
+`components/sengled_pulse` is an ESPHome external component for an ESP32
+connected to the gateway's internal UART. Minimal config:
 
 ```yaml
 external_components:
@@ -95,64 +86,99 @@ uart:
 
 sengled_pulse:
   uart_id: pulse_uart
-  lamp_slots: 2          # how many lamps to show, 1..8
-  auto_mute:             # optional
-    media_player: speaker_player
-    delay: 3s
+  lamp_slots: 2
 ```
 
-A full example is `esphome/sengled-pulse.yaml`. Entities:
+A full example is `esphome/sengled-pulse.yaml`.
 
-- lights: *All lamps* and lamp slots *Lamp 1*, *Lamp 2*, …; each slot also
-  has its own *volume*, *mute*, *channel*, *address* and an *identify* button
-  (the lamp blinks); on/off, brightness and sound are read back from the lamp;
-- *Volume*, *Mute*, *Equalizer*, *Channel*, *Light memory*: all lamps;
-- *Gateway mute*, *Gateway equalizer*, *Gateway channel*: the gateway's own
-  speaker output, separately from the lamps (its volume can not be set: the
-  gateway stores the value but ignores it, the phone app does not set it
-  either); *Audio source*;
-- *Gateway type*: gateway name and productID from `generic_info`, e.g.
-  `C01-BR30 Link (productID 2, audio box, no lamp)`;
-- adding and removing lamps: enter the lamp address (`00020056`, or the QR
-  text `...;AD:00020056`) into *Lamp address* and press *Add lamp* /
-  *Remove lamp*. The procedure is the same as in the app and takes about
-  20 s; progress is shown in *Pairing status*, the gateway's lamp list in
-  *Gateway nodes*. If anything fails while adding, the gateway network code
-  is restored.
+### Parameters
 
-Every entity key (`all_lamps`, `volume`, `gateway_mute`, `audio_source`, …)
-takes the usual entity options to rename or hide it; per-slot overrides go
-under `slots:`, e.g. `slots: [{light: {name: Kitchen}}]`. The option labels
-of a select can be renamed with `options:` (the order is the protocol value).
+| parameter | default | meaning |
+|---|---|---|
+| `id` | — | component ID, e.g. for lambdas: `id(pulse).auto_mute()` / `id(pulse).auto_unmute()` |
+| `uart_id` | the only UART | UART connected to the gateway, 115200 baud |
+| `lamp_slots` | `8` | number of lamp slots, 1..8; at least the number of lamps paired to the gateway |
+| `update_interval` | `30s` | how often the state of the gateway and every lamp is read |
+| `auto_mute` | — | mute all lamps and the gateway while a media player plays nothing |
+| `auto_mute: media_player` | — | required: ID of the media player |
+| `auto_mute: delay` | `3s` | how long the player must be silent before muting |
+| `slots` | — | entity settings of the lamp slots, a list from slot 1 |
+| entity keys | — | entity settings, see the tables below |
 
-`auto_mute` mutes all lamps and the gateway while the given media player plays
-nothing for `delay`, and unmutes them when it plays again; speakers muted by
-hand stay muted. From a lambda: `id(pulse).auto_mute()` /
-`id(pulse).auto_unmute()`.
+Every entity key takes the usual ESPHome entity options (`name`, `icon`,
+`internal`, `disabled_by_default`, `entity_category`, …). A select also takes
+`options:` to rename its labels; their number and order are fixed, the order
+is the protocol value.
 
-Feedback:
+Gateway and all lamps:
 
-- state is read back from the gateway and the lamps at boot and every 30 s, so
-  changes made from the phone app show up too;
-- a change to all lamps (light, volume, mute, channel, equalizer) is shown in
-  every lamp slot at once and confirmed by the next read-back;
-- *All lamps* shows the lamps' combined state like a Home Assistant light
-  group (on when any lamp is on, mean brightness of the lamps that are on);
-  *Volume* shows the mean volume, *Mute* is on when all lamps are muted,
-  *Channel* / *Equalizer* show the lamps' common value.
+| key | type | default name | |
+|---|---|---|---|
+| `all_lamps` | light | All lamps | all lamps; on when any lamp is on, brightness = mean of the lamps that are on |
+| `volume` | number 0..100 | Volume | all lamps, unmutes them; shows the mean volume |
+| `mute` | switch | Mute | all lamps; on when all lamps are muted |
+| `equalizer` | select | Equalizer | all lamps: normal, pop, jazz, classic, rock, movie |
+| `channel` | select | Channel | all lamps: right, left, left+right |
+| `gateway_mute` | switch | Gateway mute | the gateway's own audio output |
+| `gateway_equalizer` | select | Gateway equalizer | the gateway's own audio output |
+| `gateway_channel` | select | Gateway channel | the gateway's own audio output |
+| `audio_source` | select | Audio source | 3.5mm, bluetooth |
+| `light_memory` | switch | Light memory | light memory of the lamps (config item 0) |
+| `lamp_address` | text | Lamp address | lamp address for *Add lamp* / *Remove lamp* |
+| `add_lamp` | button | Add lamp | pair the lamp, about 20 s |
+| `remove_lamp` | button | Remove lamp | unpair the lamp |
+| `refresh_nodes` | button | Refresh node list | read the gateway's lamp list again |
+| `pairing_status` | text sensor | Pairing status | progress of adding / removing |
+| `gateway_type` | text sensor | Gateway type | name and productID, e.g. `C01-BR30 Link (productID 2, audio box, no lamp)` |
+| `gateway_nodes` | text sensor | Gateway nodes | lamps known to the gateway |
 
-Lamp slots are bound to lamps at run time, there are no addresses in the
-config and no reflashing when lamps change:
+The gateway's volume can not be set: it stores the value but ignores it.
 
-- after boot the slots are filled from the gateway's node list;
-- a lamp added with *Add lamp* takes the first free slot, a removed lamp frees
-  its slot; a lamp without a free slot is logged, raise `lamp_slots`;
-- the binding is stored in flash, so a lamp keeps its slot across reboots;
-- *Lamp N address* shows which lamp is in a slot (`empty` if none).
+Each lamp slot (keys under `slots:`, N = slot number):
 
-A freed slot is reused by the next new lamp, so after removing a lamp check
-the names you gave to that slot. After lowering `lamp_slots`, delete the
-leftover entities in Home Assistant if they stay as "unavailable".
+| key | type | default name | |
+|---|---|---|---|
+| `light` | light | Lamp N | on/off and brightness |
+| `volume` | number 0..100 | Lamp N volume | unmutes the lamp |
+| `mute` | switch | Lamp N mute | |
+| `channel` | select | Lamp N channel | right, left, left+right |
+| `address` | text sensor | Lamp N address | lamp in this slot, `empty` if none |
+| `identify` | button | Identify lamp N | the lamp blinks |
+
+With all options:
+
+```yaml
+sengled_pulse:
+  id: pulse
+  uart_id: pulse_uart
+  lamp_slots: 2
+  update_interval: 60s
+  auto_mute:
+    media_player: speaker_player
+    delay: 3s
+  audio_source:
+    options: [3.5mm, network]   # labels only, order = protocol value
+  light_memory:
+    internal: true              # hide an entity
+  slots:
+    - light: { name: Kitchen }  # slot 1
+    - identify: { internal: true }
+```
+
+### Behaviour
+
+- A change to all lamps is shown in every lamp slot at once and confirmed by
+  the next read.
+- Slots are bound to lamps at run time from the gateway's node list: no
+  addresses in the config. A new lamp takes the first free slot, a removed
+  lamp frees its slot, the binding is kept in flash. A lamp without a free
+  slot is logged; raise `lamp_slots`.
+- Adding a lamp: power it on near the gateway, put its address (or the QR
+  text) into *Lamp address*, press *Add lamp*, wait until *Pairing status*
+  says `added`. If adding fails, the gateway network code is restored.
+- `auto_mute`: speakers muted by hand stay muted when the sound comes back.
+
+### Wiring
 
 | ESP32 | gateway |
 |---|---|
@@ -160,22 +186,8 @@ leftover entities in Home Assistant if they stay as "unavailable".
 | GPIO17 (TX) | CPU RX line ← EH-MB05 pin 38 (UART_TX) |
 | GND | GND |
 
-The CPU RX line is already driven by the module's TX, so do not connect the
-ESP TX to it directly. Either cut the trace from pin 38 (the phone app stops
-working), or join both transmitters with a diode wired-AND: cut the trace,
-connect pin 38 and GPIO17 each through a Schottky diode (cathode towards the
-transmitter) to the CPU RX line, with a 4.7–10 kΩ pull-up to 3.3 V.
-
-> **Warning:** the C01-BR30 is a BR30 bulb with a mains power supply inside,
-> most likely non-isolated. Do not touch the board while it is plugged in, and
-> do not connect the ESP to a PC over USB while the bulb is on mains. Power the
-> ESP32 from a separate isolated supply.
-
-```
-cd esphome
-# create secrets.yaml with api_key, ota_password, wifi_ssid, wifi_password
-esphome run sengled-pulse.yaml
-```
+The CPU RX line is driven by the module's TX: remove the module or cut the
+trace from pin 38 before connecting GPIO17.
 
 ## Frame format
 
