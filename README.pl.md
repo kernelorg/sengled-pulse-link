@@ -165,6 +165,29 @@ sengled_pulse:
     - identify: { internal: true }
 ```
 
+### Automatyzacje
+
+Każda encja ma zwykłe wyzwalacze ESPHome: `on_value` (select, number),
+`on_turn_on` / `on_turn_off` (switch, light) itd. W `on_value` selecta `x` to
+etykieta opcji, a `i` jej numer. Uruchamiają się tylko przy zmianie wartości,
+także zmienionej na samej bramce, a nie przy każdym odczycie:
+
+```yaml
+sengled_pulse:
+  audio_source:
+    on_value:
+      then:
+        - logger.log:
+            level: INFO
+            format: "Audio source: %s"
+            args: [x.c_str()]
+        - if:
+            condition:
+              lambda: return i == 1;   # second option
+            then:
+              - media_player.stop: speaker_player
+```
+
 ### Działanie
 
 - Zmiana dla wszystkich żarówek od razu pokazuje się we wszystkich slotach i

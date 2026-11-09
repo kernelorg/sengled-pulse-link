@@ -164,6 +164,30 @@ sengled_pulse:
     - identify: { internal: true }
 ```
 
+### Автоматизации
+
+У каждой сущности есть обычные триггеры ESPHome: `on_value` (select,
+number), `on_turn_on` / `on_turn_off` (switch, light) и т. д. В `on_value` у
+select `x` — подпись варианта, `i` — его номер. Они срабатывают только при
+изменении значения, в том числе при смене на самом шлюзе, а не при каждом
+чтении:
+
+```yaml
+sengled_pulse:
+  audio_source:
+    on_value:
+      then:
+        - logger.log:
+            level: INFO
+            format: "Audio source: %s"
+            args: [x.c_str()]
+        - if:
+            condition:
+              lambda: return i == 1;   # second option
+            then:
+              - media_player.stop: speaker_player
+```
+
 ### Поведение
 
 - Изменение для всех ламп сразу показывается во всех слотах и подтверждается

@@ -22,6 +22,20 @@ static uint8_t percent(float level) {
   return (uint8_t) std::clamp(v, 0, 100);
 }
 
+// Publish a value read from the gateway or a lamp only when it changed, so
+// on_value automations fire on a change, not on every poll (switches and text
+// sensors skip repeats themselves).
+static void show_select(select::Select *s, size_t index) {
+  if (s == nullptr || index >= s->size()) return;
+  auto cur = s->active_index();
+  if (cur.has_value() && *cur == index) return;
+  s->publish_state(index);
+}
+static void show_number(number::Number *n, float value) {
+  if (n == nullptr || (n->has_state() && n->state == value)) return;
+  n->publish_state(value);
+}
+
 // ============================================================================
 // entities
 
@@ -33,6 +47,10 @@ void SengledLight::write_state(light::LightState *state) {
 
 void SengledLight::show(bool on, uint8_t level) {
   if (state_ == nullptr) return;
+  auto &v = state_->remote_values;
+  bool same_level = !on || level == 0 || (int) (v.get_brightness() * 100.0f + 0.5f) == level;
+  if (published_ && v.is_on() == on && same_level) return;  // unchanged
+  published_ = true;
   state_->remote_values.set_state(on);
   if (on && level > 0) state_->remote_values.set_brightness(level / 100.0f);
   state_->current_values = state_->remote_values;
@@ -155,10 +173,10 @@ void SengledPulse::on_frame_(const Frame &f) {
     return;
   }
   if (f.is(2, 4)) {  // gateway speaker_state: [2] channel, [3] eq, [4] mute
-    if (gw_channel_ != nullptr && f.at(2) < gw_channel_->size()) gw_channel_->publish_state((size_t) f.at(2));
+    show_select(gw_channel_, f.at(2));
     // one equalizer for the whole system (the app sends it to all and reads
     // it from the gateway)
-    if (equalizer_ != nullptr && f.at(3) < equalizer_->size()) equalizer_->publish_state((size_t) f.at(3));
+    show_select(equalizer_, f.at(3));
     if (!before(gw_mute_ignore_until_)) {  // else stale
       gw_mute_v_ = f.at(4) != 0;
       gw_mute_dirty_ = all_sound_dirty_ = true;
@@ -171,7 +189,7 @@ void SengledPulse::on_frame_(const Frame &f) {
     if (gateway_type_ != nullptr)
       gateway_type_->publish_state(name + " (productID " + std::to_string(pid) + ", " + kind + ")");
   } else if (f.is(4, 7)) {  // audio source
-    if (audio_source_ != nullptr && f.at(0) < audio_source_->size()) audio_source_->publish_state((size_t) f.at(0));
+    show_select(audio_source_, f.at(0));
   } else if (f.is(0, 12) && f.at(0) == 0) {  // config item 0: light memory
     if (light_memory_ != nullptr) light_memory_->publish_state(f.at(2) != 0);
   }
@@ -275,10 +293,9 @@ void SengledPulse::expect_sound_(int i, int volume, int mute, int channel) {
   if (!s.addr) return;
   if (!s.sound_known) {
     // the other fields are unknown: publish only what was set
-    if (volume >= 0 && s.volume != nullptr) s.volume->publish_state(volume);
+    if (volume >= 0) show_number(s.volume, volume);
     if (mute >= 0 && s.mute != nullptr) s.mute->publish_state(mute != 0);
-    if (channel >= 0 && s.channel != nullptr && (size_t) channel < s.channel->size())
-      s.channel->publish_state((size_t) channel);
+    if (channel >= 0) show_select(s.channel, channel);
     return;
   }
   if (volume >= 0) s.volume_v = volume;
@@ -307,9 +324,9 @@ void SengledPulse::publish_() {
     }
     if (s.sound_dirty) {
       s.sound_dirty = false;
-      if (s.volume != nullptr) s.volume->publish_state(s.volume_v);
+      show_number(s.volume, s.volume_v);
       if (s.mute != nullptr) s.mute->publish_state(s.mute_v != 0);
-      if (s.channel != nullptr && s.channel_v < s.channel->size()) s.channel->publish_state((size_t) s.channel_v);
+      show_select(s.channel, s.channel_v);
     }
   }
 
@@ -352,7 +369,7 @@ void SengledPulse::publish_() {
       speakers++;
       if (gw_mute_v_) muted++;
     }
-    if (n && volume_ != nullptr) volume_->publish_state((sum + n / 2) / n);
+    if (n) show_number(volume_, (sum + n / 2) / n);
     if (speakers && mute_ != nullptr) mute_->publish_state(muted == speakers);
   }
 }

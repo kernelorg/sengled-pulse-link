@@ -75,8 +75,13 @@ sengled_pulse:
   # auto_mute:
   #   media_player: speaker_player
   #   delay: 3s
-  # optional: rename or hide entities, e.g.
+  # optional: rename or hide entities, add automations, e.g.
   # audio_source:
   #   options: [3.5mm, network]
+  #   on_value:              # x = option label, i = index; only on a change
+  #     then:
+  #       - logger.log:
+  #           format: "Audio source: %s"
+  #           args: [x.c_str()]
   # slots:
   #   - light: { name: Kitchen }

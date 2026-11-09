@@ -163,6 +163,30 @@ sengled_pulse:
     - identify: { internal: true }
 ```
 
+### Automations
+
+Every entity takes the usual ESPHome triggers: `on_value` (select, number),
+`on_turn_on` / `on_turn_off` (switch, light) and so on. In `on_value` of a
+select, `x` is the option label and `i` its index. They fire only when the
+value changes, also when it is changed on the gateway itself, not on every
+read:
+
+```yaml
+sengled_pulse:
+  audio_source:
+    on_value:
+      then:
+        - logger.log:
+            level: INFO
+            format: "Audio source: %s"
+            args: [x.c_str()]
+        - if:
+            condition:
+              lambda: return i == 1;   # second option
+            then:
+              - media_player.stop: speaker_player
+```
+
 ### Behaviour
 
 - A change to all lamps is shown in every lamp slot at once and confirmed by

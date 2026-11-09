@@ -79,6 +79,7 @@ class SengledLight : public light::LightOutput, public Parented<SengledPulse> {
  protected:
   int slot_{-1};
   light::LightState *state_{nullptr};
+  bool published_{false};  // a state read from the lamps was shown
 };
 
 class SengledNumber : public number::Number, public Control {
