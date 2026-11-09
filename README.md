@@ -81,11 +81,17 @@ python3 main.py mode=send port=/dev/rfcomm0 cmd=handshake
 `esphome/` contains an ESPHome node that connects an ESP32 to the gateway's
 internal UART and exposes it to Home Assistant:
 
-- lights: *All lamps* and 8 lamp
-  slots *Lamp 1* … *Lamp 8* (the gateway supports up to 8 lamps); each slot
+- lights: *All lamps* and lamp slots *Lamp 1*, *Lamp 2*, … (8 in the
+  example, the gateway supports up to 8 lamps); each slot
   also has its own *volume*, *mute* and *channel*; on/off, brightness and sound
   are read back from the lamp;
-- volume, mute, equalizer, channel, audio source, light memory for all lamps;
+- *Volume*, *Mute*, *Equalizer*, *Channel*, light memory: all lamps;
+- *Gateway mute*, *Gateway equalizer*, *Gateway channel*: the gateway's own
+  speaker output, separately from the lamps (its volume can not be set);
+  *Audio source*;
+- `sengled::auto_mute()` / `auto_unmute()` mute all lamps and the gateway,
+  e.g. while a media player on the ESP plays nothing; speakers muted by hand
+  stay muted;
 - *Gateway type*: gateway name and productID from `generic_info`, e.g.
   `C01-BR30 Link (productID 2, audio box, no lamp)`;
 - "identify" buttons (the lamp blinks);
@@ -108,6 +114,27 @@ config and no reflashing when lamps change:
 
 A freed slot is reused by the next new lamp, so after removing a lamp check
 the names you gave to that slot.
+
+### Number of lamp slots
+
+Each slot is one `lamp_slot.yaml` package. You need at least as many slots as
+lamps paired to the gateway (at most 8); a lamp without a free slot is logged
+as `no free slot`. To change the number, edit two places in
+`sengled-pulse.yaml`:
+
+1. `substitutions` → `lamp_slots`: the number of slots, e.g. `"3"`;
+2. `packages`: one line per slot, numbered from 1, with `slot` = number − 1:
+
+   ```yaml
+   packages:
+     lamp1: !include { file: lamp_slot.yaml, vars: { slot: 0, n: 1 } }
+     lamp2: !include { file: lamp_slot.yaml, vars: { slot: 1, n: 2 } }
+     lamp3: !include { file: lamp_slot.yaml, vars: { slot: 2, n: 3 } }
+   ```
+
+Then install the firmware. The slots are filled again from the gateway's node
+list after the update. Removed slots disappear from Home Assistant; delete
+their leftover entities there if they stay as "unavailable".
 
 To add a lamp: power it on near the gateway, put its address (or the QR text)
 into *Lamp address*, press *Add lamp*, wait until *Pairing status* says
@@ -190,7 +217,7 @@ each node by the address it got back, or uses broadcast.
 | 2/0 | channel | 19 | `[15]` 0 right, 1 left, 2 left+right |
 | 2/1 | eq | 19 | `[15]` 0 normal, 1 pop, 2 jazz, 3 classic, 4 rock, 5 movie |
 | 2/2 | mute | 19 | `[15]` 1 mute, 0 unmute |
-| 2/3 | volume | 20 | `[15]` volume 0..100, `[16]` = `FF`; sets the lamps only, a Pulse Link's own audio output keeps its level (it only goes silent at ≤ 5) |
+| 2/3 | volume | 20 | `[15]` volume 0..100, `[16]` = `FF`; to `all` it sets the lamps only, a Pulse Link's own audio output keeps its level (it only goes silent at ≤ 5); to `master` the gateway stores and reports the value, but its output does not change |
 | 2/4 | speaker_state | 18 | reply `[15]` channel, `[16]` eq, `[17]` mute, `[18]` volume % |
 | 4/0 | connect_code | 16 | reply `[13..16]` network code = gateway SN (e.g. `00096CC0`) |
 | 4/1 | set_connect_code | 20 | `[13..16]` code to write into a lamp; `00FFFFFF` unbinds it |

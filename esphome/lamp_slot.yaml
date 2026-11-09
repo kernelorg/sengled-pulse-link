@@ -1,6 +1,6 @@
 # One runtime-bound lamp slot (light with state read-back, volume, mute,
 # channel, address, identify),
-# included 8 times from sengled-pulse.yaml.
+# included once per slot from sengled-pulse.yaml (see "Lamp slots" there).
 # vars: slot = 0-based index, n = number shown in entity names.
 
 output:
@@ -53,6 +53,7 @@ switch:
     name: Lamp ${n} mute
     icon: mdi:volume-off
     optimistic: true
+    restore_mode: DISABLED   # no command at boot, state is read back
     turn_on_action:
       - lambda: sengled::slot_mute(${slot}, true);
     turn_off_action:
@@ -72,8 +73,9 @@ select:
           if (i.has_value()) sengled::slot_channel(${slot}, *i);
 
 interval:
-  # publish this slot's address and the lamp's sound state
-  - interval: 1s
+  # publish this slot's address, light and sound state (only on change);
+  # short, so commands to all lamps show up in the slots at once
+  - interval: 200ms
     then:
       - lambda: |-
           // address: publish only when it changes (no log spam)

@@ -118,9 +118,11 @@ inline void brightness(uint32_t dst, uint8_t group, uint8_t own) { queue(20, dst
 inline void lamp_state(uint32_t dst, uint32_t delay_ms = 0) { queue(18, dst, 1, 3, {}, delay_ms); }
 inline void channel(uint32_t dst, uint8_t v) { queue(19, dst, 2, 0, {{15, v}}); }  // 0 R, 1 L, 2 L+R
 inline void eq(uint32_t dst, uint8_t v) { queue(19, dst, 2, 1, {{15, v}}); }       // 0..5
-inline void mute(uint32_t dst, bool m) { queue(19, dst, 2, 2, {{15, uint8_t(m ? 1 : 0)}}); }
+inline void mute(uint32_t dst, bool m, uint32_t delay_ms = 0) {
+  queue(19, dst, 2, 2, {{15, uint8_t(m ? 1 : 0)}}, delay_ms);
+}
 inline void volume(uint32_t dst, uint8_t v) { queue(20, dst, 2, 3, {{15, v}, {16, 0xFF}}); }
-inline void speaker_state(uint32_t dst) { queue(18, dst, 2, 4); }
+inline void speaker_state(uint32_t dst, uint32_t delay_ms = 0) { queue(18, dst, 2, 4, {}, delay_ms); }
 inline void audio_source(uint8_t v) { queue(19, ALL, 4, 6, {{15, v}}); }  // 0 3.5mm, 1 BT
 inline void get_audio_source() { queue(16, MASTER, 4, 7); }
 
@@ -276,65 +278,86 @@ inline std::string hex8(uint32_t v) {
 }
 
 // ---- lamp slots -------------------------------------------------------------
-// ESPHome entities are fixed at build time, so the config has N lamp slots.
+// ESPHome entities are fixed at build time, so the config has a fixed number of
+// lamp slots: the size of the `lamp_slots` globals array (at most MAX, the
+// gateway's limit), one lamp_slot.yaml package per slot.
 // A slot is bound to a lamp address at run time from the gateway's node list
 // (enum_slaves): known lamps keep their slot, new ones take the first free
 // slot, slots of removed lamps are freed. The table lives in a `globals` with
 // restore_value, so the binding survives reboots.
 namespace slots {
 
-static const size_t N = 8;  // the gateway supports up to 8 lamps
-using Table = std::array<uint32_t, N>;
-static Table *table = nullptr;
+static const size_t MAX = 8;  // the gateway supports up to 8 lamps
+using Table = std::array<uint32_t, MAX>;
+static uint32_t *table = nullptr;  // the `lamp_slots` globals array
+static size_t N = 0;               // number of slots in the config
 static bool changed = false;
 
 // last speaker_state reply per slot
 struct Sound {
   bool known = false;
   bool changed = false;
+  uint32_t ignore_until = 0;  // replies before this belong to the state before the last command
   uint8_t channel = 0, eq = 0, mute = 0, volume = 0;
 };
-static std::array<Sound, N> sound{};
+static std::array<Sound, MAX> sound{};
 
 // last lamp_state reply per slot
 struct Light {
+  bool known = false;
   bool changed = false;
   uint32_t ignore_until = 0;  // replies before this belong to the state before the last command
   bool on = false;
   uint8_t level = 0;  // 0..100, the lamp's own brightness (the one a slot sets)
 };
-static std::array<Light, N> light{};
+static std::array<Light, MAX> light{};
+static bool lights_changed = false;  // some slot's light changed: refresh "All lamps"
+static bool sounds_changed = false;  // some slot's sound changed: refresh Volume/Mute/Channel/Equalizer
 
-inline void bind(Table *t) { table = t; changed = true; }
-inline uint32_t addr(size_t i) { return (table && i < N) ? (*table)[i] : 0; }
+// call from on_boot: bind(id(lamp_slots).data(), id(lamp_slots).size())
+inline void bind(uint32_t *t, size_t n) {
+  table = t;
+  N = n < MAX ? n : MAX;
+  changed = true;
+}
+inline uint32_t addr(size_t i) { return (table && i < N) ? table[i] : 0; }
 inline std::string text(size_t i) { return addr(i) ? hex8(addr(i)) : std::string("empty"); }
 
 inline void sync(const std::vector<uint32_t> &nodes) {
   if (!table) return;
-  Table t = *table;
-  for (auto &a : t)
-    if (a && std::find(nodes.begin(), nodes.end(), a) == nodes.end()) a = 0;
+  Table t{};
+  std::copy(table, table + N, t.begin());
+  for (size_t i = 0; i < N; i++)
+    if (t[i] && std::find(nodes.begin(), nodes.end(), t[i]) == nodes.end()) t[i] = 0;
   for (uint32_t a : nodes) {
     if (a == MASTER || a == ALL || a == CLIENT) continue;
-    if (std::find(t.begin(), t.end(), a) != t.end()) continue;
-    for (auto &slot : t)
-      if (slot == 0) { slot = a; break; }
+    if (std::find(t.begin(), t.begin() + N, a) != t.begin() + N) continue;
+    size_t i = 0;
+    while (i < N && t[i]) i++;
+    if (i < N)
+      t[i] = a;
+    else
+      ESP_LOGW("sengled", "lamp %08X: no free slot (%u slots), add a lamp_slot package", (unsigned) a, (unsigned) N);
   }
-  if (t != *table) {
-    for (size_t i = 0; i < N; i++)
-      if (t[i] != (*table)[i]) {
-        sound[i] = Sound{};
-        light[i] = Light{};
-      }
-    *table = t;
+  bool diff = false;
+  for (size_t i = 0; i < N; i++)
+    if (t[i] != table[i]) {
+      sound[i] = Sound{};
+      light[i] = Light{};
+      table[i] = t[i];
+      diff = true;
+    }
+  if (diff) {
     changed = true;
+    lights_changed = true;
+    sounds_changed = true;
   }
 }
 
 inline int index_of(uint32_t a) {
   if (!table || a == MASTER) return -1;
   for (size_t i = 0; i < N; i++)
-    if ((*table)[i] == a) return (int) i;
+    if (table[i] == a) return (int) i;
   return -1;
 }
 
@@ -351,22 +374,116 @@ inline void on_frame(const Frame &f) {
     if ((int32_t) (esphome::millis() - l.ignore_until) < 0) return;  // stale
     l.on = f.at(2) == 0;
     if (f.at(4) <= 100) l.level = f.at(4);
+    l.known = true;
     l.changed = true;
+    lights_changed = true;
     return;
   }
   if (!f.is(2, 4) || f.payload.size() < 6) return;
   ESP_LOGD("sengled", "lamp %08X: channel %u, eq %u, mute %u, volume %u", (unsigned) f.src, f.at(2), f.at(3), f.at(4),
            f.at(5));
   Sound &s = sound[i];
+  if ((int32_t) (esphome::millis() - s.ignore_until) < 0) return;  // stale
   s.channel = f.at(2);
   s.eq = f.at(3);
   s.mute = f.at(4);
   s.volume = f.at(5);
   s.known = true;
   s.changed = true;
+  sounds_changed = true;
+}
+
+// A command to all lamps: show the expected state in every bound slot right
+// away instead of waiting for the next read-back. Replies already on their way
+// show the old state and are dropped for STALE_MS; the next read-back
+// confirms (or corrects) what is shown.
+static const uint32_t STALE_MS = 900;
+inline void expect_light_all(bool on, uint8_t level) {
+  for (size_t i = 0; i < N; i++) {
+    if (!addr(i)) continue;
+    Light &l = light[i];
+    l.on = on;
+    if (on) l.level = level;
+    l.known = true;
+    l.ignore_until = esphome::millis() + STALE_MS;
+    l.changed = true;
+  }
+  lights_changed = true;
+}
+// "All lamps" state from the slots, like a Home Assistant light group:
+// on when any lamp is on, brightness = mean of the lamps that are on.
+// Returns false while no lamp state is known yet.
+inline bool all_light(bool &on, uint8_t &level) {
+  int known = 0, n_on = 0, sum = 0;
+  for (size_t i = 0; i < N; i++) {
+    if (!addr(i) || !light[i].known) continue;
+    known++;
+    if (light[i].on) {
+      n_on++;
+      sum += light[i].level;
+    }
+  }
+  if (!known) return false;
+  on = n_on > 0;
+  level = n_on ? (uint8_t) ((sum + n_on / 2) / n_on) : 0;
+  return true;
+}
+// -1 = keep. Only slots whose sound state was read once: the slot publishes
+// volume, mute and channel together, unknown fields would show wrong values.
+inline void expect_sound_all(int volume, int mute, int channel, int eq = -1) {
+  for (size_t i = 0; i < N; i++) {
+    Sound &s = sound[i];
+    if (!addr(i) || !s.known) continue;
+    if (volume >= 0) s.volume = volume;
+    if (mute >= 0) s.mute = mute;
+    if (channel >= 0) s.channel = channel;
+    if (eq >= 0) s.eq = eq;
+    s.ignore_until = esphome::millis() + STALE_MS;
+    s.changed = true;
+  }
+  sounds_changed = true;
+}
+// Volume / Mute / Channel / Equalizer of all lamps from the slots:
+// volume = mean, mute = every lamp muted, channel / eq = the common value
+// (-1 when the lamps differ). known = false while no lamp was read yet.
+struct SoundAll {
+  bool known = false;
+  bool mute = false;
+  uint8_t volume = 0;
+  int channel = -1, eq = -1;
+};
+inline SoundAll all_sound() {
+  SoundAll a;
+  int n = 0, sum = 0, muted = 0;
+  for (size_t i = 0; i < N; i++) {
+    const Sound &s = sound[i];
+    if (!addr(i) || !s.known) continue;
+    if (n == 0) {
+      a.channel = s.channel;
+      a.eq = s.eq;
+    } else {
+      if (a.channel != s.channel) a.channel = -1;
+      if (a.eq != s.eq) a.eq = -1;
+    }
+    n++;
+    sum += s.volume;
+    if (s.mute) muted++;
+  }
+  if (!n) return a;
+  a.known = true;
+  a.volume = (uint8_t) ((sum + n / 2) / n);
+  a.mute = muted == n;
+  return a;
 }
 
 }  // namespace slots
+
+// manual mutes, see "automatic mute" below
+namespace automute {
+static bool active = false;
+static std::array<bool, slots::MAX> user_muted{};
+static bool gw_user_muted = false;
+}  // namespace automute
 
 inline void slot_lamp(size_t i, float level) {
   if (!ready || !slots::addr(i)) return;
@@ -380,15 +497,13 @@ inline void slot_lamp(size_t i, float level) {
 inline void slot_identify(size_t i) {
   if (slots::addr(i)) identify(slots::addr(i));
 }
-inline void slot_mute(size_t i, bool m) {
-  if (slots::addr(i)) mute(slots::addr(i), m);
-}
 inline void slot_channel(size_t i, uint8_t c) {
   if (slots::addr(i)) channel(slots::addr(i), c);
 }
 // like the app's volume slider: set the volume, then unmute
 inline void slot_volume(size_t i, uint8_t v) {
   if (!slots::addr(i)) return;
+  automute::user_muted[i] = false;
   volume(slots::addr(i), v);
   mute(slots::addr(i), false);
 }
@@ -404,6 +519,81 @@ inline void poll_slots() {
 inline void poll_lamps_later() {
   for (size_t i = 0; i < slots::N; i++)
     if (slots::addr(i)) lamp_state(slots::addr(i), i == 0 ? 1000 : 0);
+}
+// "All lamps" light: send, show it in the lamp slots at once, read back later
+inline void all_lamps_light(float level) {
+  if (!ready) return;
+  int v = (int) (level * 100.0f + 0.5f);
+  if (v > 100) v = 100;
+  all_lamps(level);
+  slots::expect_light_all(v > 0, (uint8_t) (v > 0 ? v : 0));
+  poll_lamps_later();
+}
+// "Volume": like the app's volume slider, set the volume on all lamps, then unmute
+inline void all_lamps_volume(uint8_t v) {
+  automute::user_muted.fill(false);
+  volume(ALL, v);
+  mute(ALL, false);
+  slots::expect_sound_all(v, 0, -1);
+}
+inline void all_lamps_channel(uint8_t c) {
+  channel(ALL, c);
+  slots::expect_sound_all(-1, -1, c);
+}
+inline void all_lamps_eq(uint8_t e) {
+  eq(ALL, e);
+  slots::expect_sound_all(-1, -1, -1, e);
+}
+
+// ---- automatic mute ---------------------------------------------------------
+// Mute every speaker (all lamps and the gateway) while nothing is playing,
+// e.g. while the ESP's own media player is idle (state in `automute`, above). When the sound comes back,
+// only the speakers muted by hand (mute switches, since the last boot) stay
+// muted. The lamps keep their mute state over an ESP reboot, so it can not be
+// taken from them.
+
+// Commands to single lamps get lost now and then (the gateway relays one
+// frame at a time), broadcasts are more reliable: both directions use a
+// broadcast sent twice, like the app's on/off. Lamps muted by hand are muted
+// again by address afterwards, the gateway gets its own command.
+inline void auto_mute() {
+  if (automute::active) return;
+  automute::active = true;
+  ESP_LOGI("sengled", "nothing playing: muting all speakers");
+  mute(ALL, true);
+  mute(ALL, true, 200);
+  mute(MASTER, true, 400);
+}
+// returns whether the gateway was unmuted
+inline bool auto_unmute() {
+  if (!automute::active) return false;
+  automute::active = false;
+  ESP_LOGI("sengled", "playing: unmuting speakers");
+  mute(ALL, false);
+  mute(ALL, false, 200);
+  for (size_t i = 0; i < slots::N; i++)
+    if (slots::addr(i) && automute::user_muted[i]) {
+      mute(slots::addr(i), true, 400);
+      mute(slots::addr(i), true, 600);
+    }
+  mute(MASTER, automute::gw_user_muted, 800);
+  for (size_t i = 0; i < slots::N; i++)  // read the lamps' sound state back
+    if (slots::addr(i)) speaker_state(slots::addr(i), 2000);
+  return !automute::gw_user_muted;
+}
+// mute switches: remember what was muted by hand
+inline void gateway_mute(bool m) {
+  automute::gw_user_muted = m;
+  mute(MASTER, m);
+}
+inline void all_lamps_mute(bool m) {
+  automute::user_muted.fill(m);
+  mute(ALL, m);
+  slots::expect_sound_all(-1, m ? 1 : 0, -1);
+}
+inline void slot_mute(size_t i, bool m) {
+  if (i < slots::MAX) automute::user_muted[i] = m;
+  if (slots::addr(i)) mute(slots::addr(i), m);
 }
 
 // ---- add / remove lamps ----------------------------------------------------

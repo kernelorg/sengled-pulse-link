@@ -83,12 +83,17 @@ python3 main.py mode=send port=/dev/rfcomm0 cmd=handshake
 W `esphome/` znajduje się węzeł ESPHome: ESP32 podłącza się do wewnętrznego
 UART bramki i udostępnia sterowanie w Home Assistant:
 
-- światło: *All lamps* i 8 slotów
-  *Lamp 1* … *Lamp 8* (bramka obsługuje do 8 żarówek); każdy slot ma też
+- światło: *All lamps* i sloty *Lamp 1*, *Lamp 2*, … (w przykładzie 8,
+  bramka obsługuje do 8 żarówek); każdy slot ma też
   własne *volume*, *mute* i *channel*; wł./wył., jasność i dźwięk są odczytywane
   z żarówki;
-- głośność, wyciszenie, korektor, kanał, źródło dźwięku, pamięć światła dla
-  wszystkich żarówek;
+- *Volume*, *Mute*, *Equalizer*, *Channel*, pamięć światła: wszystkie żarówki;
+- *Gateway mute*, *Gateway equalizer*, *Gateway channel*: własne wyjście
+  audio bramki, osobno od żarówek (głośności bramki nie da się ustawić);
+  *Audio source*;
+- `sengled::auto_mute()` / `auto_unmute()` wyciszają wszystkie żarówki
+  i bramkę, np. gdy odtwarzacz na ESP nic nie gra; wyciszone ręcznie
+  zostają wyciszone;
 - *Gateway type*: nazwa bramki i productID z `generic_info`, np.
   `C01-BR30 Link (productID 2, audio box, no lamp)`;
 - przyciski „identify” (żarówka miga);
@@ -113,6 +118,27 @@ adresów i przy zmianie żarówek nie trzeba ponownie wgrywać firmware.
 
 Zwolniony slot zajmie następna nowa żarówka, więc po usunięciu żarówki sprawdź
 nazwę nadaną temu slotowi.
+
+### Liczba slotów
+
+Każdy slot to jeden pakiet `lamp_slot.yaml`. Slotów musi być co najmniej tyle,
+ile żarówek sparowanych z bramką (maksymalnie 8); żarówka bez wolnego slotu
+trafia do logu jako `no free slot`. Aby zmienić liczbę, popraw dwa miejsca
+w `sengled-pulse.yaml`:
+
+1. `substitutions` → `lamp_slots`: liczba slotów, np. `"3"`;
+2. `packages`: jedna linia na slot, numeracja od 1, `slot` = numer − 1:
+
+   ```yaml
+   packages:
+     lamp1: !include { file: lamp_slot.yaml, vars: { slot: 0, n: 1 } }
+     lamp2: !include { file: lamp_slot.yaml, vars: { slot: 1, n: 2 } }
+     lamp3: !include { file: lamp_slot.yaml, vars: { slot: 2, n: 3 } }
+   ```
+
+Następnie wgraj firmware. Po aktualizacji sloty są ponownie wypełniane według
+listy węzłów bramki. Usunięte sloty znikają z Home Assistant; jeśli ich encje
+zostały jako „niedostępne”, usuń je tam.
 
 Aby dodać żarówkę: włącz ją blisko bramki, wpisz adres (lub tekst QR)
 w *Lamp address*, naciśnij *Add lamp* i poczekaj na `added` w *Pairing
@@ -198,7 +224,7 @@ zwraca się do każdego węzła pod otrzymanym adresem albo używa rozgłoszenia
 | 2/0 | channel | 19 | `[15]` 0 prawy, 1 lewy, 2 lewy+prawy |
 | 2/1 | eq | 19 | `[15]` 0 normal, 1 pop, 2 jazz, 3 classic, 4 rock, 5 movie |
 | 2/2 | mute | 19 | `[15]` 1 wyciszenie, 0 dźwięk |
-| 2/3 | volume | 20 | `[15]` głośność 0..100, `[16]` = `FF`; zmienia tylko żarówki, własne wyjście audio Pulse Link zostaje na swoim poziomie (przy ≤ 5 tylko milknie) |
+| 2/3 | volume | 20 | `[15]` głośność 0..100, `[16]` = `FF`; do `all` zmienia tylko żarówki, własne wyjście audio Pulse Link zostaje na swoim poziomie (przy ≤ 5 tylko milknie); do `master` bramka zapamiętuje i zwraca wartość, ale głośność jej wyjścia się nie zmienia |
 | 2/4 | speaker_state | 18 | odpowiedź `[15]` kanał, `[16]` eq, `[17]` mute, `[18]` głośność % |
 | 4/0 | connect_code | 16 | odpowiedź `[13..16]` kod sieci = SN bramki (np. `00096CC0`) |
 | 4/1 | set_connect_code | 20 | `[13..16]` kod do zapisania w żarówce; `00FFFFFF` ją odłącza |
